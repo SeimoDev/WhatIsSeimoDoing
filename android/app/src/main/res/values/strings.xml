@@ -1,0 +1,8 @@
+﻿<resources>
+    <string name="app_name">WhatIsSeimoDoing</string>
+    <string name="accessibility_desc">Report foreground app changes to backend.</string>
+    <string name="foreground_service_channel_name">KeepAlive</string>
+    <string name="foreground_service_channel_desc">Persistent keep-alive monitor service</string>
+    <string name="foreground_service_notification_title">WhatIsSeimoDoing running</string>
+    <string name="foreground_service_notification_text">Monitoring app switches and daily usage stats</string>
+</resources>

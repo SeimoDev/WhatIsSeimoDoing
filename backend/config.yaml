@@ -1,0 +1,17 @@
+server:
+  host: 192.168.2.247
+  port: 3030
+web:
+  port: 5173
+  allowedOrigin: http://192.168.2.247:5173
+security:
+  jwtSecret: change-this-super-secret-jwt-key
+  refreshSecret: change-this-super-secret-refresh-key
+  screenshotPassword: change_me_1234
+  screenshotTokenTtlMinutes: 10
+  registerCode: register_me
+storage:
+  sqlitePath: ./data/whatis.db
+  retentionDays: 90
+realtime:
+  heartbeatTimeoutSec: 30

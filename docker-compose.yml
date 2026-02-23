@@ -1,0 +1,26 @@
+﻿services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: wisd-backend
+    restart: unless-stopped
+    ports:
+      - "3030:3030"
+    volumes:
+      - ./backend/config.yaml:/app/config.yaml:ro
+      - ./backend/data:/app/data
+    environment:
+      - TZ=Asia/Shanghai
+      - SERVER_HOST=0.0.0.0
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: wisd-web
+    restart: unless-stopped
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend

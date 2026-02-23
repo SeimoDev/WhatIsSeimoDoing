@@ -1,1 +1,132 @@
-# WhatIsSeimoDoing
+﻿# WhatIsSeimoDoing V1
+
+Android 客户端 + Web 前端 + NestJS 后端，实现多设备实时前台应用监控、5 分钟统计上报和远程截图。
+
+## 目录结构
+
+- `backend/`: NestJS + SQLite + Socket.IO
+- `web/`: Vue3 + Vite 实时监控面板
+- `android/`: Kotlin + Compose + Miuix Android 客户端
+- `ops/`: 部署模板（含 Nginx 反代示例）
+- `docker-compose.yml`: 内网联调部署
+
+## 核心能力
+
+- Android 前台切换实时上报（AccessibilityService）
+- 每 5 分钟上报当日统计（UsageStats + 通知数 + 解锁数）
+- Web 面板实时展示：
+  - 当前运行应用（图标/名称/包名/时长）
+  - 今日每 APP 使用时长
+  - 通知总数、解锁次数
+  - 近 7 天趋势 + 明细
+- 远程截图：
+  - 网页输入截图密码获取 10 分钟 token
+  - 在线设备触发截图，客户端 Root `screencap` 上报
+  - 图片仅内存缓存，不落盘
+- 保活策略：
+  - 前台常驻服务 + 通知
+  - 开机自启
+  - MIUI 自启动/电池策略引导入口
+  - Root 守护脚本拉起服务
+
+## 默认测试地址
+
+- Backend: `http://192.168.2.247:3030`
+- API Base: `http://192.168.2.247:3030/api/v1`
+- Web: `http://192.168.2.247:5173`
+
+## 后端配置
+
+编辑 `backend/config.yaml`:
+
+```yaml
+server:
+  host: 192.168.2.247
+  port: 3030
+web:
+  port: 5173
+  allowedOrigin: http://192.168.2.247:5173
+security:
+  jwtSecret: change-this-super-secret-jwt-key
+  refreshSecret: change-this-super-secret-refresh-key
+  screenshotPassword: change_me_1234
+  screenshotTokenTtlMinutes: 10
+  registerCode: register_me
+storage:
+  sqlitePath: ./data/whatis.db
+  retentionDays: 90
+realtime:
+  heartbeatTimeoutSec: 30
+```
+
+## 本地运行
+
+### Backend
+
+```bash
+cd backend
+npm install
+npm run build
+npm run start:dev
+```
+
+### Web
+
+```bash
+cd web
+npm install
+npm run dev
+```
+
+### Android
+
+```bash
+cd android
+./gradlew.bat :app:compileDebugKotlin
+```
+
+说明：在当前 CI/容器资源下，`assembleDebug` 在 dex merge 阶段可能 OOM；`compileDebugKotlin` 已通过，建议在 Android Studio 本机环境打包。
+
+## Docker 联调
+
+```bash
+docker compose up --build
+```
+
+服务端口：
+
+- backend: `3030`
+- web: `5173`
+
+## 主要 API
+
+- `POST /api/v1/devices/register`
+- `POST /api/v1/devices/heartbeat` (device bearer)
+- `POST /api/v1/events/foreground-switch` (device bearer)
+- `POST /api/v1/stats/daily-snapshot` (device bearer)
+- `POST /api/v1/screenshots/auth`
+- `POST /api/v1/screenshots/request` (screenshot bearer)
+- `POST /api/v1/screenshots/result` (device bearer, multipart)
+- `GET /api/v1/dashboard/devices`
+- `GET /api/v1/dashboard/devices/:deviceId/today`
+- `GET /api/v1/dashboard/devices/:deviceId/history?days=7`
+
+## WebSocket 事件（namespace: `/ws`）
+
+- 推送到 web:
+  - `device.online`
+  - `device.offline`
+  - `foreground.updated`
+  - `stats.updated`
+  - `screenshot.ready`
+  - `screenshot.error`
+- 下发到 device:
+  - `screenshot.request`
+
+## 安全注意
+
+第一阶段按你的要求未实现网页登录，仅截图操作需要密码。若要公网部署，建议至少补齐：
+
+1. HTTPS
+2. Web 登录鉴权与角色控制
+3. IP/频率限制与审计日志
