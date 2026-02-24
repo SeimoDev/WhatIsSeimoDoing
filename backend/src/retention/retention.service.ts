@@ -79,7 +79,7 @@ export class RetentionService {
     let appRowsUpdated = 0;
     let realtimeRowsUpdated = 0;
     let overflowDeviceCount = 0;
-    let overflowAppRowsDeleted = 0;
+    let overflowAppRowsTrimmed = 0;
 
     this.db.transaction(() => {
       const appResult = this.db.run(
@@ -132,27 +132,44 @@ export class RetentionService {
 
       overflowDeviceCount = overflowDevices.length;
       for (const device of overflowDevices) {
-        const deleteResult = this.db.run(
-          `DELETE FROM daily_app_usage_stats
+        let remainingAllowedMs = elapsedMsSinceMidnight;
+        const appRows = this.db.all<{
+          package_name: string;
+          usage_ms: number;
+        }>(
+          `SELECT package_name, usage_ms
+           FROM daily_app_usage_stats
            WHERE device_id = @deviceId
-             AND stat_date = @statDate`,
+             AND stat_date = @statDate
+           ORDER BY usage_ms DESC, package_name ASC`,
           {
             deviceId: device.device_id,
             statDate,
           },
         );
-        overflowAppRowsDeleted += deleteResult.changes;
 
-        this.db.run(
-          `UPDATE device_realtime_state
-           SET today_usage_ms = 0,
-               updated_at = @updatedAt
-           WHERE device_id = @deviceId`,
-          {
-            deviceId: device.device_id,
-            updatedAt: nowTs,
-          },
-        );
+        for (const appRow of appRows) {
+          const normalizedUsageMs = Math.max(0, Math.floor(appRow.usage_ms));
+          const trimmedUsageMs = Math.min(normalizedUsageMs, remainingAllowedMs);
+          remainingAllowedMs = Math.max(0, remainingAllowedMs - trimmedUsageMs);
+
+          if (trimmedUsageMs !== normalizedUsageMs) {
+            this.db.run(
+              `UPDATE daily_app_usage_stats
+               SET usage_ms = @usageMs
+               WHERE device_id = @deviceId
+                 AND stat_date = @statDate
+                 AND package_name = @packageName`,
+              {
+                deviceId: device.device_id,
+                statDate,
+                packageName: appRow.package_name,
+                usageMs: trimmedUsageMs,
+              },
+            );
+            overflowAppRowsTrimmed += 1;
+          }
+        }
       }
     });
 
@@ -162,7 +179,7 @@ export class RetentionService {
       overflowDeviceCount > 0
     ) {
       this.logger.warn(
-        `Today usage sanitized. trigger=${trigger} statDate=${statDate} elapsedMs=${elapsedMsSinceMidnight} appRowsUpdated=${appRowsUpdated} realtimeRowsUpdated=${realtimeRowsUpdated} overflowDeviceCount=${overflowDeviceCount} overflowAppRowsDeleted=${overflowAppRowsDeleted}`,
+        `Today usage sanitized. trigger=${trigger} statDate=${statDate} elapsedMs=${elapsedMsSinceMidnight} appRowsUpdated=${appRowsUpdated} realtimeRowsUpdated=${realtimeRowsUpdated} overflowDeviceCount=${overflowDeviceCount} overflowAppRowsTrimmed=${overflowAppRowsTrimmed}`,
       );
     }
   }
