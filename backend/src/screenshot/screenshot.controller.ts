@@ -3,9 +3,11 @@ import {
   Body,
   Controller,
   Get,
+  Headers,
   Param,
   Post,
   Res,
+  UnauthorizedException,
   UploadedFile,
   UseGuards,
   UseInterceptors,
@@ -16,7 +18,6 @@ import { DeviceJwtGuard } from '../device-auth/guards/device-jwt.guard';
 import { AuthScreenshotDto } from './dto/auth-screenshot.dto';
 import { RequestScreenshotDto } from './dto/request-screenshot.dto';
 import { ScreenshotResultDto } from './dto/screenshot-result.dto';
-import { ScreenshotTokenGuard } from './guards/screenshot-token.guard';
 import { ScreenshotService } from './screenshot.service';
 
 @Controller('screenshots')
@@ -29,9 +30,8 @@ export class ScreenshotController {
   }
 
   @Post('request')
-  @UseGuards(ScreenshotTokenGuard)
   request(@Body() dto: RequestScreenshotDto) {
-    return this.screenshotService.requestScreenshot(dto.deviceId);
+    return this.screenshotService.requestScreenshot(dto.deviceId, dto.password);
   }
 
   @Post('result')
@@ -53,8 +53,16 @@ export class ScreenshotController {
   }
 
   @Get('result/:requestId')
-  getResult(@Param('requestId') requestId: string, @Res() response: Response) {
-    const data = this.screenshotService.getScreenshotByRequestId(requestId);
+  getResult(
+    @Param('requestId') requestId: string,
+    @Headers('x-screenshot-password') password: string | undefined,
+    @Res() response: Response,
+  ) {
+    if (!password) {
+      throw new UnauthorizedException('Missing screenshot password');
+    }
+
+    const data = this.screenshotService.getScreenshotByRequestId(requestId, password);
     response.setHeader('Content-Type', data.mimeType);
     response.send(data.buffer);
   }

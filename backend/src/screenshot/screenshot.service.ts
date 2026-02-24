@@ -6,7 +6,6 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { JwtService } from '@nestjs/jwt';
 import { compareSync, hashSync } from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
 import { AppConfig } from '../config/app-config';
@@ -23,11 +22,6 @@ interface RealtimeState {
   is_online: number;
   last_heartbeat_at: number | null;
   updated_at: number | null;
-}
-
-interface ScreenshotTokenPayload {
-  type: 'screenshot';
-  scope: 'request';
 }
 
 @Injectable()
@@ -48,7 +42,6 @@ export class ScreenshotService {
   constructor(
     private readonly db: DatabaseService,
     private readonly configService: ConfigService,
-    private readonly jwtService: JwtService,
     private readonly realtimeGateway: RealtimeGateway,
   ) {
     this.security = this.configService.getOrThrow<AppConfig['security']>('security');
@@ -57,45 +50,15 @@ export class ScreenshotService {
   }
 
   authenticate(password: string) {
-    const valid = compareSync(password, this.hashedScreenshotPassword);
-    if (!valid) {
-      throw new UnauthorizedException('Invalid screenshot password');
-    }
-
-    const screenshotToken = this.jwtService.sign(
-      {
-        type: 'screenshot',
-        scope: 'request',
-      } satisfies ScreenshotTokenPayload,
-      {
-        secret: this.security.jwtSecret,
-        expiresIn: `${this.security.screenshotTokenTtlMinutes}m`,
-      },
-    );
-
+    this.assertValidScreenshotPassword(password);
     return {
-      screenshotToken,
-      expiresInMinutes: this.security.screenshotTokenTtlMinutes,
+      ok: true,
     };
   }
 
-  verifyScreenshotToken(token: string): ScreenshotTokenPayload {
-    try {
-      const payload = this.jwtService.verify<ScreenshotTokenPayload>(token, {
-        secret: this.security.jwtSecret,
-      });
+  requestScreenshot(deviceId: string, password: string) {
+    this.assertValidScreenshotPassword(password);
 
-      if (payload.type !== 'screenshot') {
-        throw new UnauthorizedException('Invalid screenshot token');
-      }
-
-      return payload;
-    } catch {
-      throw new UnauthorizedException('Invalid screenshot token');
-    }
-  }
-
-  requestScreenshot(deviceId: string) {
     const device = this.db.get<{ id: string }>('SELECT id FROM devices WHERE id = @id', {
       id: deviceId,
     });
@@ -205,12 +168,9 @@ export class ScreenshotService {
       this.screenshotBufferStore.delete(requestId);
     }, 2 * 60 * 1000).unref();
 
-    const dataUrl = `data:${mimeType};base64,${imageBuffer.toString('base64')}`;
-
     this.realtimeGateway.emitToWeb('screenshot.ready', {
       requestId,
       deviceId: request.device_id,
-      imageDataUrl: dataUrl,
       ts: Date.now(),
     });
 
@@ -220,7 +180,9 @@ export class ScreenshotService {
     };
   }
 
-  getScreenshotByRequestId(requestId: string) {
+  getScreenshotByRequestId(requestId: string, password: string) {
+    this.assertValidScreenshotPassword(password);
+
     const data = this.screenshotBufferStore.get(requestId);
     if (!data) {
       throw new NotFoundException('Screenshot not available');
@@ -262,5 +224,12 @@ export class ScreenshotService {
         ts: Date.now(),
       });
     }, timeoutMs).unref();
+  }
+
+  private assertValidScreenshotPassword(password: string): void {
+    const valid = compareSync(password, this.hashedScreenshotPassword);
+    if (!valid) {
+      throw new UnauthorizedException('Invalid screenshot password');
+    }
   }
 }

@@ -27,6 +27,7 @@ const en = {
     request: 'Request Screenshot',
     requesting: 'Requesting...',
     waiting: 'Waiting device response...',
+    fetching: 'Screenshot captured, fetching from server...',
     requestSent: 'Request sent ({requestId})',
     requestFailed: 'Request failed: {msg}',
     ready: 'Screenshot ready ({requestId})',

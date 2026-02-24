@@ -264,6 +264,7 @@ interface ScreenshotMeta {
 
 type UsageAppItem = TodayStats['apps'][number];
 type HistoryDisplayPoint = HistoryStats['points'][number];
+const SCREENSHOT_PASSWORD_STORAGE_KEY = 'wisd_screenshot_password';
 
 const { t, locale } = useI18n();
 
@@ -288,9 +289,7 @@ const screenshotProgressStartedAt = ref<number>(0);
 const screenshotProgressDurationMs = ref<number>(0);
 const activeScreenshotRequestId = ref<string>('');
 const activeScreenshotDeviceId = ref<string>('');
-
-const screenshotToken = ref<string>('');
-const screenshotTokenExpireAt = ref<number>(0);
+const screenshotPassword = ref<string>(readLocalScreenshotPassword());
 
 const chartRef = ref<HTMLDivElement | null>(null);
 let chart: echarts.ECharts | null = null;
@@ -328,6 +327,32 @@ function onChangeLocale(next: AppLocale) {
     return;
   }
   setAppLocale(next);
+}
+
+function readLocalScreenshotPassword(): string {
+  try {
+    return sessionStorage.getItem(SCREENSHOT_PASSWORD_STORAGE_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function setLocalScreenshotPassword(password: string) {
+  screenshotPassword.value = password;
+  try {
+    sessionStorage.setItem(SCREENSHOT_PASSWORD_STORAGE_KEY, password);
+  } catch {
+    // Ignore storage write failures (private mode, quota, etc.)
+  }
+}
+
+function clearLocalScreenshotPassword() {
+  screenshotPassword.value = '';
+  try {
+    sessionStorage.removeItem(SCREENSHOT_PASSWORD_STORAGE_KEY);
+  } catch {
+    // Ignore storage delete failures.
+  }
 }
 
 function pushScreenshotProgressLog(message: string) {
@@ -440,7 +465,7 @@ async function onRequestScreenshot() {
     return;
   }
 
-  if (!hasValidScreenshotToken()) {
+  if (!hasSavedScreenshotPassword()) {
     showPasswordModal.value = true;
     return;
   }
@@ -449,20 +474,17 @@ async function onRequestScreenshot() {
 }
 
 async function submitPassword() {
-  if (!passwordInput.value.trim()) {
+  const nextPassword = passwordInput.value.trim();
+  if (!nextPassword) {
     return;
   }
 
   try {
-    const { data } = await apiClient.post<{ screenshotToken: string; expiresInMinutes: number }>(
-      '/screenshots/auth',
-      {
-        password: passwordInput.value,
-      },
-    );
+    await apiClient.post<{ ok: boolean }>('/screenshots/auth', {
+      password: nextPassword,
+    });
 
-    screenshotToken.value = data.screenshotToken;
-    screenshotTokenExpireAt.value = Date.now() + data.expiresInMinutes * 60 * 1000;
+    setLocalScreenshotPassword(nextPassword);
     passwordInput.value = '';
     showPasswordModal.value = false;
 
@@ -475,6 +497,12 @@ async function submitPassword() {
 }
 
 async function requestScreenshot(deviceId: string) {
+  const password = screenshotPassword.value.trim();
+  if (!password) {
+    showPasswordModal.value = true;
+    return;
+  }
+
   screenshotLoading.value = true;
   screenshotHint.value = t('screenshot.waiting');
   closeScreenshotProgressModal();
@@ -482,12 +510,7 @@ async function requestScreenshot(deviceId: string) {
   try {
     const { data } = await apiClient.post<{ requestId: string; timeoutSec: number }>(
       '/screenshots/request',
-      { deviceId },
-      {
-        headers: {
-          Authorization: `Bearer ${screenshotToken.value}`,
-        },
-      },
+      { deviceId, password },
     );
 
     activeScreenshotRequestId.value = data.requestId;
@@ -499,12 +522,16 @@ async function requestScreenshot(deviceId: string) {
   } catch (error) {
     closeScreenshotProgressModal();
     clearActiveScreenshotRequest();
+    if (isUnauthorizedError(error)) {
+      clearLocalScreenshotPassword();
+      showPasswordModal.value = true;
+    }
     screenshotHint.value = t('screenshot.requestFailed', { msg: toMessage(error) });
   }
 }
 
-function hasValidScreenshotToken() {
-  return Boolean(screenshotToken.value) && Date.now() < screenshotTokenExpireAt.value;
+function hasSavedScreenshotPassword() {
+  return screenshotPassword.value.trim().length >= 4;
 }
 
 function mapScreenshotReason(reason: string): string {
@@ -516,6 +543,46 @@ function mapScreenshotReason(reason: string): string {
     return t('screenshot.reason.timeout');
   }
   return reason;
+}
+
+async function arrayBufferToDataUrl(buffer: ArrayBuffer, mimeType: string): Promise<string> {
+  const blob = new Blob([buffer], { type: mimeType });
+  return await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        resolve(reader.result);
+        return;
+      }
+      reject(new Error('Invalid screenshot data'));
+    };
+    reader.onerror = () => reject(new Error('Read screenshot data failed'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function fetchScreenshotResult(requestId: string): Promise<string> {
+  const password = screenshotPassword.value.trim();
+  if (!password) {
+    throw new Error('Missing screenshot password');
+  }
+
+  const response = await apiClient.get<ArrayBuffer>(`/screenshots/result/${requestId}`, {
+    responseType: 'arraybuffer',
+    headers: {
+      'X-Screenshot-Password': password,
+    },
+  });
+
+  const contentType = String(response.headers['content-type'] ?? 'image/png');
+  return arrayBufferToDataUrl(response.data, contentType);
+}
+
+function isUnauthorizedError(error: unknown): boolean {
+  const maybe = error as {
+    response?: { status?: number };
+  };
+  return maybe.response?.status === 401;
 }
 
 async function saveScreenshotImage() {
@@ -671,7 +738,7 @@ function bindSocket() {
 
   socket.on(
     'screenshot.ready',
-    (payload: { deviceId: string; imageDataUrl: string; requestId: string }) => {
+    async (payload: { deviceId: string; requestId: string }) => {
       const hasActiveRequest = Boolean(activeScreenshotRequestId.value);
       if (hasActiveRequest && payload.requestId !== activeScreenshotRequestId.value) {
         return;
@@ -683,18 +750,31 @@ function bindSocket() {
 
       screenshotProgress.value = 100;
       pushScreenshotProgressLog(t('screenshot.ready', { requestId: payload.requestId }));
-      closeScreenshotProgressModal();
-      clearActiveScreenshotRequest();
+      pushScreenshotProgressLog(t('screenshot.fetching'));
 
-      if (payload.deviceId === selectedDeviceId.value) {
-        screenshotImageDataUrl.value = payload.imageDataUrl;
-        screenshotMeta.value = {
-          requestId: payload.requestId,
-          timestamp: Date.now(),
-        };
-        showScreenshotViewerModal.value = true;
+      try {
+        const imageDataUrl = await fetchScreenshotResult(payload.requestId);
+        closeScreenshotProgressModal();
+        clearActiveScreenshotRequest();
+
+        if (payload.deviceId === selectedDeviceId.value) {
+          screenshotImageDataUrl.value = imageDataUrl;
+          screenshotMeta.value = {
+            requestId: payload.requestId,
+            timestamp: Date.now(),
+          };
+          showScreenshotViewerModal.value = true;
+        }
+        screenshotHint.value = t('screenshot.ready', { requestId: payload.requestId });
+      } catch (error) {
+        closeScreenshotProgressModal();
+        clearActiveScreenshotRequest();
+        if (isUnauthorizedError(error)) {
+          clearLocalScreenshotPassword();
+          showPasswordModal.value = true;
+        }
+        screenshotHint.value = t('screenshot.requestFailed', { msg: toMessage(error) });
       }
-      screenshotHint.value = t('screenshot.ready', { requestId: payload.requestId });
     },
   );
 

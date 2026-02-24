@@ -27,6 +27,7 @@ const zhCN = {
     request: '\u8bf7\u6c42\u622a\u56fe',
     requesting: '\u8bf7\u6c42\u4e2d...',
     waiting: '\u7b49\u5f85\u8bbe\u5907\u54cd\u5e94...',
+    fetching: '\u622a\u56fe\u5df2\u751f\u6210\uff0c\u6b63\u5728\u4ece\u670d\u52a1\u7aef\u83b7\u53d6...',
     requestSent: '\u8bf7\u6c42\u5df2\u53d1\u9001\uff08{requestId}\uff09',
     requestFailed: '\u8bf7\u6c42\u5931\u8d25\uff1a{msg}',
     ready: '\u622a\u56fe\u5df2\u5c31\u7eea\uff08{requestId}\uff09',
