@@ -13,15 +13,15 @@ class RootForegroundProbe(
         val keywords: List<String>,
     ) {
         ACTIVITY_ACTIVITIES(
-            command = "dumpsys activity activities",
+            command = "/system/bin/dumpsys activity activities",
             keywords = listOf("topResumedActivity", "mResumedActivity"),
         ),
         WINDOW_WINDOWS(
-            command = "dumpsys window windows",
+            command = "/system/bin/dumpsys window windows",
             keywords = listOf("mCurrentFocus", "mFocusedApp"),
         ),
         ACTIVITY_TOP(
-            command = "dumpsys activity top",
+            command = "/system/bin/dumpsys activity top",
             keywords = listOf("ACTIVITY "),
         ),
     }

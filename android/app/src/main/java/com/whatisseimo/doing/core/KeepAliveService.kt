@@ -17,6 +17,7 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
+import android.view.inputmethod.InputMethodManager
 import androidx.core.app.NotificationCompat
 import com.whatisseimo.doing.R
 import com.whatisseimo.doing.WhatIsSeimoDoingApp
@@ -26,6 +27,7 @@ import com.whatisseimo.doing.core.foreground.RootForegroundProbe
 import com.whatisseimo.doing.core.foreground.RootForegroundSwitchEngine
 import com.whatisseimo.doing.util.RootUtils
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -205,53 +207,60 @@ class KeepAliveService : Service() {
 
         Log.i(TAG, "FG_ROOT root probe worker started")
         while (serviceScope.isActive) {
-            val now = System.currentTimeMillis()
-            if (!powerManager.isInteractive) {
-                rootForegroundSwitchEngine.clearCandidate()
-                delay(ROOT_SCREEN_OFF_INTERVAL_MS)
-                continue
-            }
+            try {
+                val now = System.currentTimeMillis()
+                if (!powerManager.isInteractive) {
+                    rootForegroundSwitchEngine.clearCandidate()
+                    delay(ROOT_SCREEN_OFF_INTERVAL_MS)
+                    continue
+                }
 
-            val sample = rootForegroundProbe.poll()
-            if (sample.parseMatched) {
-                foregroundCoordinator.markRootSampleSuccess(now)
-                val packageName = sample.packageName
-                if (packageName != null) {
-                    val confirmed = rootForegroundSwitchEngine.onSample(
-                        packageName = packageName,
-                        sampleTs = now,
-                    )
-
-                    if (
-                        confirmed != null &&
-                        foregroundCoordinator.tryAccept(
-                            source = ForegroundSource.ROOT,
-                            packageName = confirmed.packageName,
-                            ts = confirmed.firstSeenTs,
-                            now = now,
+                val sample = rootForegroundProbe.poll()
+                if (sample.parseMatched) {
+                    foregroundCoordinator.markRootSampleSuccess(now)
+                    val packageName = sample.packageName
+                    if (packageName != null) {
+                        val confirmed = rootForegroundSwitchEngine.onSample(
+                            packageName = packageName,
+                            sampleTs = now,
                         )
-                    ) {
-                        runCatching {
-                            telemetryManager.reportForegroundSwitch(
+
+                        if (
+                            confirmed != null &&
+                            foregroundCoordinator.tryAccept(
+                                source = ForegroundSource.ROOT,
                                 packageName = confirmed.packageName,
                                 ts = confirmed.firstSeenTs,
+                                now = now,
                             )
-                        }.onFailure {
-                            Log.e(TAG, "FG_ROOT failed to report package=${confirmed.packageName}", it)
+                        ) {
+                            runCatching {
+                                telemetryManager.reportForegroundSwitch(
+                                    packageName = confirmed.packageName,
+                                    ts = confirmed.firstSeenTs,
+                                )
+                            }.onFailure {
+                                Log.e(TAG, "FG_ROOT failed to report package=${confirmed.packageName}", it)
+                            }
                         }
                     }
+                } else {
+                    foregroundCoordinator.markRootSampleFailure(now)
+                    val fallbackEnabled = foregroundCoordinator.allowAccessibilityFallback(now)
+                    Log.d(
+                        TAG,
+                        "FG_ROOT probe miss source=${sample.probeType} " +
+                            "exit=${sample.exitCode} timeout=${sample.timedOut} fallback=$fallbackEnabled",
+                    )
                 }
-            } else {
-                foregroundCoordinator.markRootSampleFailure(now)
-                val fallbackEnabled = foregroundCoordinator.allowAccessibilityFallback(now)
-                Log.d(
-                    TAG,
-                    "FG_ROOT probe miss source=${sample.probeType} " +
-                        "exit=${sample.exitCode} timeout=${sample.timedOut} fallback=$fallbackEnabled",
-                )
+                delay(ROOT_POLL_INTERVAL_MS)
+            } catch (error: Throwable) {
+                if (error is CancellationException) {
+                    throw error
+                }
+                Log.e(TAG, "FG_ROOT worker iteration failed", error)
+                delay(WORKER_FAILURE_BACKOFF_MS)
             }
-
-            delay(ROOT_POLL_INTERVAL_MS)
         }
     }
 
@@ -259,46 +268,54 @@ class KeepAliveService : Service() {
         Log.i(TAG, "UNLOCK_TRACK worker started")
 
         while (serviceScope.isActive) {
-            val now = System.currentTimeMillis()
-            val interactive = powerManager.isInteractive
-            val keyguardLocked = keyguardManager.isKeyguardLocked
-            val shouldCount = unlockCountEngine.onSample(
-                interactive = interactive,
-                keyguardLocked = keyguardLocked,
-                sampleTs = now,
-            )
+            try {
+                val now = System.currentTimeMillis()
+                val interactive = powerManager.isInteractive
+                val keyguardLocked = keyguardManager.isKeyguardLocked
+                val shouldCount = unlockCountEngine.onSample(
+                    interactive = interactive,
+                    keyguardLocked = keyguardLocked,
+                    sampleTs = now,
+                )
 
-            Log.d(
-                TAG,
-                "UNLOCK_TRACK sample interactive=$interactive keyguardLocked=$keyguardLocked shouldCount=$shouldCount",
-            )
+                Log.d(
+                    TAG,
+                    "UNLOCK_TRACK sample interactive=$interactive keyguardLocked=$keyguardLocked shouldCount=$shouldCount",
+                )
 
-            if (shouldCount) {
-                telemetryManager.incrementUnlockCount()
-                Log.i(TAG, "UNLOCK_TRACK counted unlock at=$now")
+                if (shouldCount) {
+                    telemetryManager.incrementUnlockCount()
+                    Log.i(TAG, "UNLOCK_TRACK counted unlock at=$now")
 
-                if (now - lastUnlockImmediateSnapshotAt >= UNLOCK_IMMEDIATE_SNAPSHOT_MIN_INTERVAL_MS) {
-                    lastUnlockImmediateSnapshotAt = now
-                    runCatching {
-                        telemetryManager.sendDailySnapshot()
-                    }.onFailure {
-                        Log.e(TAG, "UNLOCK_TRACK immediate snapshot failed", it)
+                    if (now - lastUnlockImmediateSnapshotAt >= UNLOCK_IMMEDIATE_SNAPSHOT_MIN_INTERVAL_MS) {
+                        lastUnlockImmediateSnapshotAt = now
+                        runCatching {
+                            telemetryManager.sendDailySnapshot()
+                        }.onFailure {
+                            Log.e(TAG, "UNLOCK_TRACK immediate snapshot failed", it)
+                        }
+                    } else {
+                        Log.d(
+                            TAG,
+                            "UNLOCK_TRACK immediate snapshot throttled intervalMs=${now - lastUnlockImmediateSnapshotAt}",
+                        )
                     }
-                } else {
-                    Log.d(
-                        TAG,
-                        "UNLOCK_TRACK immediate snapshot throttled intervalMs=${now - lastUnlockImmediateSnapshotAt}",
-                    )
                 }
-            }
 
-            delay(
-                if (interactive) {
-                    UNLOCK_POLL_INTERVAL_MS
-                } else {
-                    UNLOCK_POLL_SCREEN_OFF_INTERVAL_MS
-                },
-            )
+                delay(
+                    if (interactive) {
+                        UNLOCK_POLL_INTERVAL_MS
+                    } else {
+                        UNLOCK_POLL_SCREEN_OFF_INTERVAL_MS
+                    },
+                )
+            } catch (error: Throwable) {
+                if (error is CancellationException) {
+                    throw error
+                }
+                Log.e(TAG, "UNLOCK_TRACK worker iteration failed", error)
+                delay(WORKER_FAILURE_BACKOFF_MS)
+            }
         }
     }
 
@@ -306,25 +323,33 @@ class KeepAliveService : Service() {
         Log.i(TAG, "SCREEN_STATE worker started")
 
         while (serviceScope.isActive) {
-            val now = System.currentTimeMillis()
-            val isScreenLocked = !powerManager.isInteractive || keyguardManager.isKeyguardLocked
-            val shouldReport =
-                lastReportedScreenLocked == null || lastReportedScreenLocked != isScreenLocked
+            try {
+                val now = System.currentTimeMillis()
+                val isScreenLocked = !powerManager.isInteractive || keyguardManager.isKeyguardLocked
+                val shouldReport =
+                    lastReportedScreenLocked == null || lastReportedScreenLocked != isScreenLocked
 
-            if (shouldReport) {
-                runCatching {
-                    telemetryManager.reportScreenState(
-                        isScreenLocked = isScreenLocked,
-                        ts = now,
-                    )
-                    lastReportedScreenLocked = isScreenLocked
-                    Log.i(TAG, "SCREEN_STATE reported isLocked=$isScreenLocked ts=$now")
-                }.onFailure {
-                    Log.e(TAG, "SCREEN_STATE report failed isLocked=$isScreenLocked", it)
+                if (shouldReport) {
+                    runCatching {
+                        telemetryManager.reportScreenState(
+                            isScreenLocked = isScreenLocked,
+                            ts = now,
+                        )
+                        lastReportedScreenLocked = isScreenLocked
+                        Log.i(TAG, "SCREEN_STATE reported isLocked=$isScreenLocked ts=$now")
+                    }.onFailure {
+                        Log.e(TAG, "SCREEN_STATE report failed isLocked=$isScreenLocked", it)
+                    }
                 }
-            }
 
-            delay(SCREEN_STATE_POLL_INTERVAL_MS)
+                delay(SCREEN_STATE_POLL_INTERVAL_MS)
+            } catch (error: Throwable) {
+                if (error is CancellationException) {
+                    throw error
+                }
+                Log.e(TAG, "SCREEN_STATE worker iteration failed", error)
+                delay(WORKER_FAILURE_BACKOFF_MS)
+            }
         }
     }
 
@@ -362,31 +387,20 @@ class KeepAliveService : Service() {
 
         val next = mutableSetOf<String>()
 
-        val enabledRaw = Settings.Secure.getString(
-            contentResolver,
-            Settings.Secure.ENABLED_INPUT_METHODS,
-        ).orEmpty()
-        enabledRaw.split(':')
-            .mapNotNull { flattenComponentToPackage(it) }
-            .forEach { next.add(it) }
-
-        val defaultIme = Settings.Secure.getString(
-            contentResolver,
-            Settings.Secure.DEFAULT_INPUT_METHOD,
-        ).orEmpty()
-        flattenComponentToPackage(defaultIme)?.let { next.add(it) }
+        runCatching {
+            val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+            val inputMethodList = imm.enabledInputMethodList
+            for (info in inputMethodList) {
+                val packageName = info.packageName
+                if (packageName.isNotBlank()) {
+                    next.add(packageName)
+                }
+            }
+        }
 
         imePackagesCache.clear()
         imePackagesCache.addAll(next)
         imeCacheUpdatedAt = now
-    }
-
-    private fun flattenComponentToPackage(raw: String): String? {
-        if (raw.isBlank()) {
-            return null
-        }
-
-        return raw.substringBefore('/').takeIf { it.isNotBlank() }
     }
 
     private suspend fun ensureSocketConnected() {
@@ -723,6 +737,7 @@ class KeepAliveService : Service() {
         private const val UNLOCK_MIN_EVENT_GAP_MS = 2_000L
         private const val UNLOCK_IMMEDIATE_SNAPSHOT_MIN_INTERVAL_MS = 10_000L
         private const val SCREEN_STATE_POLL_INTERVAL_MS = 1_000L
+        private const val WORKER_FAILURE_BACKOFF_MS = 2_000L
 
         private val ROOT_TRANSIENT_SYSTEM_UI_PACKAGES = setOf(
             "com.android.systemui",

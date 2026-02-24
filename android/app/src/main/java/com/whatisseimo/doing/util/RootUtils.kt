@@ -16,7 +16,6 @@ data class SuCommandResult(
 object RootUtils {
     private const val TAG = "RootUtils"
     private const val DEFAULT_SU_OUTPUT_TIMEOUT_MS = 1_200L
-    private const val STREAM_JOIN_TIMEOUT_MS = 200L
 
     fun hasRoot(): Boolean {
         return runCatching {
@@ -65,8 +64,8 @@ object RootUtils {
     ): SuCommandResult {
         return runCatching {
             val process = Runtime.getRuntime().exec(arrayOf("su", "-c", command))
-            val stdoutBuffer = StringBuilder()
-            val stderrBuffer = StringBuilder()
+            val stdoutBuffer = StringBuffer()
+            val stderrBuffer = StringBuffer()
 
             val stdoutThread = thread(start = true, name = "wisd-su-stdout") {
                 runCatching {
@@ -93,8 +92,8 @@ object RootUtils {
                 process.destroyForcibly()
             }
 
-            stdoutThread.join(STREAM_JOIN_TIMEOUT_MS)
-            stderrThread.join(STREAM_JOIN_TIMEOUT_MS)
+            stdoutThread.join()
+            stderrThread.join()
 
             val exitCode = if (finished) {
                 runCatching { process.exitValue() }.getOrDefault(-1)

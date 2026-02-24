@@ -1,12 +1,14 @@
 package com.whatisseimo.doing.core
 
 import android.accessibilityservice.AccessibilityService
+import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
+import android.view.inputmethod.InputMethodManager
 import com.whatisseimo.doing.WhatIsSeimoDoingApp
 import com.whatisseimo.doing.core.foreground.ForegroundSource
 import com.whatisseimo.doing.core.foreground.ForegroundSourceCoordinator
@@ -236,19 +238,16 @@ class MonitorAccessibilityService : AccessibilityService() {
 
         val next = mutableSetOf<String>()
 
-        val enabledRaw = Settings.Secure.getString(
-            contentResolver,
-            Settings.Secure.ENABLED_INPUT_METHODS,
-        ).orEmpty()
-        enabledRaw.split(':')
-            .mapNotNull { flattenComponentToPackage(it) }
-            .forEach { next.add(it) }
-
-        val defaultIme = Settings.Secure.getString(
-            contentResolver,
-            Settings.Secure.DEFAULT_INPUT_METHOD,
-        ).orEmpty()
-        flattenComponentToPackage(defaultIme)?.let { next.add(it) }
+        runCatching {
+            val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+            val inputMethodList = imm.enabledInputMethodList
+            for (info in inputMethodList) {
+                val packageName = info.packageName
+                if (packageName.isNotBlank()) {
+                    next.add(packageName)
+                }
+            }
+        }
 
         imePackagesCache.clear()
         imePackagesCache.addAll(next)

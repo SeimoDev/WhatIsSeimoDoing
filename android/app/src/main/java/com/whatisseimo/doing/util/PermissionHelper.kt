@@ -9,7 +9,6 @@ import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
 import com.whatisseimo.doing.core.MonitorAccessibilityService
-import java.lang.reflect.Method
 
 object PermissionHelper {
     fun isAccessibilityEnabled(context: Context): Boolean {
@@ -111,34 +110,28 @@ object PermissionHelper {
         }
 
         val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
-        val opAutoStart = resolveMiuiAutoStartOpCode() ?: return null
-
         val mode = runCatching {
-            val checkOpIntMethod: Method = AppOpsManager::class.java.getDeclaredMethod(
-                "checkOpNoThrow",
-                Int::class.javaPrimitiveType,
-                Int::class.javaPrimitiveType,
-                String::class.java,
-            )
-            checkOpIntMethod.isAccessible = true
-            checkOpIntMethod.invoke(
-                appOps,
-                opAutoStart,
-                android.os.Process.myUid(),
-                context.packageName,
-            ) as Int
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                appOps.unsafeCheckOpNoThrow(
+                    MIUI_AUTO_START_OP_STR,
+                    android.os.Process.myUid(),
+                    context.packageName,
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                appOps.checkOpNoThrow(
+                    MIUI_AUTO_START_OP_STR,
+                    android.os.Process.myUid(),
+                    context.packageName,
+                )
+            }
         }.getOrNull() ?: return null
 
-        return mode == AppOpsManager.MODE_ALLOWED || mode == AppOpsManager.MODE_DEFAULT
-    }
-
-    private fun resolveMiuiAutoStartOpCode(): Int? {
-        // Xiaomi/MIUI uses an app-op for AutoStart (commonly 10008). Reflect first, fallback to constant.
-        return runCatching {
-            val field = AppOpsManager::class.java.getDeclaredField("OP_AUTO_START")
-            field.isAccessible = true
-            field.getInt(null)
-        }.getOrNull() ?: 10008
+        return when (mode) {
+            AppOpsManager.MODE_ALLOWED, AppOpsManager.MODE_DEFAULT -> true
+            AppOpsManager.MODE_IGNORED -> false
+            else -> null
+        }
     }
 
     private fun isMiuiDevice(): Boolean {
@@ -154,4 +147,6 @@ object PermissionHelper {
 
         return miuiVersion.isNotBlank()
     }
+
+    private const val MIUI_AUTO_START_OP_STR = "android:auto_start"
 }
