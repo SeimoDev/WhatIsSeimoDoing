@@ -69,7 +69,7 @@ export const loadConfiguration = (): AppConfig => {
         process.env.HEARTBEAT_TIMEOUT_SEC ?? parsed.realtime.heartbeatTimeoutSec,
       ),
       screenshotTimeoutSec: Number(
-        process.env.SCREENSHOT_TIMEOUT_SEC ?? parsed.realtime.screenshotTimeoutSec ?? 45,
+        process.env.SCREENSHOT_TIMEOUT_SEC ?? parsed.realtime.screenshotTimeoutSec ?? 60,
       ),
       namespace: process.env.WS_NAMESPACE ?? parsed.realtime.namespace,
       publicWsUrl: process.env.PUBLIC_WS_URL ?? parsed.realtime.publicWsUrl,
