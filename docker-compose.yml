@@ -4,7 +4,7 @@ services:
     container_name: wisd-gateway
     restart: unless-stopped
     ports:
-      - "80:80"
+      - "9990:80"
     environment:
       - DOMAIN=${DOMAIN}
     volumes:

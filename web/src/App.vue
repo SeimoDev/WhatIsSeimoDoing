@@ -286,6 +286,8 @@ const screenshotProgressLogs = ref<string[]>([]);
 const screenshotProgressRequestId = ref<string>('');
 const screenshotProgressStartedAt = ref<number>(0);
 const screenshotProgressDurationMs = ref<number>(0);
+const activeScreenshotRequestId = ref<string>('');
+const activeScreenshotDeviceId = ref<string>('');
 
 const screenshotToken = ref<string>('');
 const screenshotTokenExpireAt = ref<number>(0);
@@ -350,6 +352,12 @@ function closeScreenshotProgressModal() {
   screenshotProgressLogs.value = [];
 }
 
+function clearActiveScreenshotRequest() {
+  activeScreenshotRequestId.value = '';
+  activeScreenshotDeviceId.value = '';
+  screenshotLoading.value = false;
+}
+
 function startScreenshotProgress(requestId: string, timeoutSec: number) {
   stopScreenshotProgressTracking();
   showScreenshotProgressModal.value = true;
@@ -397,6 +405,7 @@ async function refreshDevices() {
 }
 
 async function selectDevice(deviceId: string) {
+  clearActiveScreenshotRequest();
   selectedDeviceId.value = deviceId;
   screenshotImageDataUrl.value = '';
   screenshotHint.value = '';
@@ -481,14 +490,16 @@ async function requestScreenshot(deviceId: string) {
       },
     );
 
+    activeScreenshotRequestId.value = data.requestId;
+    activeScreenshotDeviceId.value = deviceId;
     const timeoutSec = Number.isFinite(data.timeoutSec) ? Math.max(5, data.timeoutSec) : 30;
     startScreenshotProgress(data.requestId, timeoutSec);
     pushScreenshotProgressLog(t('screenshot.requestSent', { requestId: data.requestId }));
     screenshotHint.value = t('screenshot.requestSent', { requestId: data.requestId });
   } catch (error) {
     closeScreenshotProgressModal();
+    clearActiveScreenshotRequest();
     screenshotHint.value = t('screenshot.requestFailed', { msg: toMessage(error) });
-    screenshotLoading.value = false;
   }
 }
 
@@ -661,26 +672,51 @@ function bindSocket() {
   socket.on(
     'screenshot.ready',
     (payload: { deviceId: string; imageDataUrl: string; requestId: string }) => {
-      if (payload.deviceId !== selectedDeviceId.value) {
+      const hasActiveRequest = Boolean(activeScreenshotRequestId.value);
+      if (hasActiveRequest && payload.requestId !== activeScreenshotRequestId.value) {
+        return;
+      }
+
+      if (!hasActiveRequest && payload.deviceId !== selectedDeviceId.value) {
         return;
       }
 
       screenshotProgress.value = 100;
       pushScreenshotProgressLog(t('screenshot.ready', { requestId: payload.requestId }));
       closeScreenshotProgressModal();
-      screenshotImageDataUrl.value = payload.imageDataUrl;
-      screenshotMeta.value = {
-        requestId: payload.requestId,
-        timestamp: Date.now(),
-      };
-      showScreenshotViewerModal.value = true;
+      clearActiveScreenshotRequest();
+
+      if (payload.deviceId === selectedDeviceId.value) {
+        screenshotImageDataUrl.value = payload.imageDataUrl;
+        screenshotMeta.value = {
+          requestId: payload.requestId,
+          timestamp: Date.now(),
+        };
+        showScreenshotViewerModal.value = true;
+      }
       screenshotHint.value = t('screenshot.ready', { requestId: payload.requestId });
-      screenshotLoading.value = false;
     },
   );
 
-  socket.on('screenshot.error', (payload: { deviceId: string; reason: string }) => {
-    if (payload.deviceId !== selectedDeviceId.value) {
+  socket.on('screenshot.error', (payload: { requestId?: string; deviceId: string; reason: string }) => {
+    const hasActiveRequest = Boolean(activeScreenshotRequestId.value);
+    if (
+      hasActiveRequest &&
+      payload.requestId &&
+      payload.requestId !== activeScreenshotRequestId.value
+    ) {
+      return;
+    }
+
+    if (
+      hasActiveRequest &&
+      activeScreenshotDeviceId.value &&
+      payload.deviceId !== activeScreenshotDeviceId.value
+    ) {
+      return;
+    }
+
+    if (!hasActiveRequest && payload.deviceId !== selectedDeviceId.value) {
       return;
     }
 
@@ -691,10 +727,10 @@ function bindSocket() {
       }),
     );
     closeScreenshotProgressModal();
+    clearActiveScreenshotRequest();
     screenshotHint.value = t('screenshot.failed', {
       reason: mapScreenshotReason(payload.reason),
     });
-    screenshotLoading.value = false;
   });
 }
 
@@ -846,6 +882,7 @@ onMounted(async () => {
 onUnmounted(() => {
   window.removeEventListener('resize', renderHistoryChart);
   stopScreenshotProgressTracking();
+  clearActiveScreenshotRequest();
   socket?.disconnect();
   chart?.dispose();
   chart = null;
