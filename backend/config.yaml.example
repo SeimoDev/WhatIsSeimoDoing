@@ -15,5 +15,6 @@ storage:
   retentionDays: 90
 realtime:
   heartbeatTimeoutSec: 30
+  screenshotTimeoutSec: 30
   namespace: /api/v1/ws
-  publicWsUrl: ws://doing.seimo.cn/api/v1/ws
+  publicWsUrl: wss://doing.seimo.cn/api/v1/ws

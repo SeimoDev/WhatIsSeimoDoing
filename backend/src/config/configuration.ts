@@ -26,6 +26,7 @@ const configSchema = Joi.object<AppConfig>({
   }).required(),
   realtime: Joi.object({
     heartbeatTimeoutSec: Joi.number().integer().min(5).required(),
+    screenshotTimeoutSec: Joi.number().integer().min(5).required(),
     namespace: Joi.string().pattern(/^\/.+/).required(),
     publicWsUrl: Joi.string().uri({ scheme: ['ws', 'wss'] }).required(),
   }).required(),
@@ -66,6 +67,9 @@ export const loadConfiguration = (): AppConfig => {
       ...parsed.realtime,
       heartbeatTimeoutSec: Number(
         process.env.HEARTBEAT_TIMEOUT_SEC ?? parsed.realtime.heartbeatTimeoutSec,
+      ),
+      screenshotTimeoutSec: Number(
+        process.env.SCREENSHOT_TIMEOUT_SEC ?? parsed.realtime.screenshotTimeoutSec ?? 30,
       ),
       namespace: process.env.WS_NAMESPACE ?? parsed.realtime.namespace,
       publicWsUrl: process.env.PUBLIC_WS_URL ?? parsed.realtime.publicWsUrl,

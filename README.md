@@ -61,6 +61,7 @@ storage:
   retentionDays: 90
 realtime:
   heartbeatTimeoutSec: 30
+  screenshotTimeoutSec: 30
   namespace: /api/v1/ws
   publicWsUrl: ws://192.168.2.247/api/v1/ws
 ```

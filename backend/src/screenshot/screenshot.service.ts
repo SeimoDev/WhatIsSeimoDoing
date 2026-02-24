@@ -164,6 +164,7 @@ export class ScreenshotService {
       requestId,
       status: 'pending',
       wsConnected,
+      timeoutSec: this.realtime.screenshotTimeoutSec,
     };
   }
 
@@ -229,7 +230,7 @@ export class ScreenshotService {
   }
 
   private scheduleRequestTimeout(requestId: string, deviceId: string): void {
-    const timeoutMs = 8_000;
+    const timeoutMs = this.realtime.screenshotTimeoutSec * 1000;
     setTimeout(() => {
       const request = this.db.get<RequestRow>(
         `SELECT id, device_id, status

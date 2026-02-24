@@ -194,6 +194,28 @@
       </div>
     </div>
 
+    <div v-if="showScreenshotProgressModal" class="modal-mask">
+      <div class="progress-modal-card">
+        <h3>{{ t('screenshot.requesting') }}</h3>
+        <p v-if="screenshotProgressRequestId" class="viewer-meta">
+          {{ t('screenshot.requestSent', { requestId: screenshotProgressRequestId }) }}
+        </p>
+        <div class="progress-track">
+          <div class="progress-fill" :style="{ width: `${screenshotProgress}%` }" />
+        </div>
+        <p class="progress-value">{{ screenshotProgress }}%</p>
+        <div class="progress-log-wrap">
+          <p
+            v-for="(line, index) in screenshotProgressLogs"
+            :key="`${screenshotProgressRequestId}-${index}`"
+            class="progress-log-line"
+          >
+            {{ line }}
+          </p>
+        </div>
+      </div>
+    </div>
+
     <div v-if="showScreenshotViewerModal" class="modal-mask" @click.self="showScreenshotViewerModal = false">
       <div class="viewer-modal-card">
         <h3>{{ t('screenshot.viewer.title') }}</h3>
@@ -255,9 +277,15 @@ const screenshotLoading = ref<boolean>(false);
 const screenshotImageDataUrl = ref<string>('');
 const screenshotHint = ref<string>('');
 const showPasswordModal = ref<boolean>(false);
+const showScreenshotProgressModal = ref<boolean>(false);
 const showScreenshotViewerModal = ref<boolean>(false);
 const screenshotMeta = ref<ScreenshotMeta | null>(null);
 const passwordInput = ref<string>('');
+const screenshotProgress = ref<number>(0);
+const screenshotProgressLogs = ref<string[]>([]);
+const screenshotProgressRequestId = ref<string>('');
+const screenshotProgressStartedAt = ref<number>(0);
+const screenshotProgressDurationMs = ref<number>(0);
 
 const screenshotToken = ref<string>('');
 const screenshotTokenExpireAt = ref<number>(0);
@@ -265,6 +293,7 @@ const screenshotTokenExpireAt = ref<number>(0);
 const chartRef = ref<HTMLDivElement | null>(null);
 let chart: echarts.ECharts | null = null;
 let socket: Socket | null = null;
+let screenshotProgressTimer: number | null = null;
 
 const selectedDevice = computed(() =>
   devices.value.find((item) => item.deviceId === selectedDeviceId.value),
@@ -299,6 +328,49 @@ function onChangeLocale(next: AppLocale) {
   setAppLocale(next);
 }
 
+function pushScreenshotProgressLog(message: string) {
+  const line = `[${dayjs().format('HH:mm:ss')}] ${message}`;
+  screenshotProgressLogs.value = [...screenshotProgressLogs.value, line].slice(-8);
+}
+
+function stopScreenshotProgressTracking() {
+  if (screenshotProgressTimer !== null) {
+    window.clearInterval(screenshotProgressTimer);
+    screenshotProgressTimer = null;
+  }
+}
+
+function closeScreenshotProgressModal() {
+  stopScreenshotProgressTracking();
+  showScreenshotProgressModal.value = false;
+  screenshotProgress.value = 0;
+  screenshotProgressRequestId.value = '';
+  screenshotProgressStartedAt.value = 0;
+  screenshotProgressDurationMs.value = 0;
+  screenshotProgressLogs.value = [];
+}
+
+function startScreenshotProgress(requestId: string, timeoutSec: number) {
+  stopScreenshotProgressTracking();
+  showScreenshotProgressModal.value = true;
+  screenshotProgress.value = 0;
+  screenshotProgressRequestId.value = requestId;
+  screenshotProgressStartedAt.value = Date.now();
+  screenshotProgressDurationMs.value = Math.max(timeoutSec, 5) * 1000;
+  screenshotProgressLogs.value = [];
+
+  pushScreenshotProgressLog(t('screenshot.waiting'));
+  screenshotProgressTimer = window.setInterval(() => {
+    if (!showScreenshotProgressModal.value || screenshotProgressDurationMs.value <= 0) {
+      return;
+    }
+
+    const elapsedMs = Date.now() - screenshotProgressStartedAt.value;
+    const percent = Math.floor((elapsedMs / screenshotProgressDurationMs.value) * 100);
+    screenshotProgress.value = Math.min(99, Math.max(0, percent));
+  }, 300);
+}
+
 async function refreshDevices() {
   deviceLoading.value = true;
   errorMessage.value = '';
@@ -328,6 +400,7 @@ async function selectDevice(deviceId: string) {
   selectedDeviceId.value = deviceId;
   screenshotImageDataUrl.value = '';
   screenshotHint.value = '';
+  closeScreenshotProgressModal();
   showScreenshotViewerModal.value = false;
   screenshotMeta.value = null;
   await Promise.all([fetchToday(deviceId), fetchHistory(deviceId)]);
@@ -395,9 +468,10 @@ async function submitPassword() {
 async function requestScreenshot(deviceId: string) {
   screenshotLoading.value = true;
   screenshotHint.value = t('screenshot.waiting');
+  closeScreenshotProgressModal();
 
   try {
-    const { data } = await apiClient.post<{ requestId: string }>(
+    const { data } = await apiClient.post<{ requestId: string; timeoutSec: number }>(
       '/screenshots/request',
       { deviceId },
       {
@@ -407,10 +481,13 @@ async function requestScreenshot(deviceId: string) {
       },
     );
 
+    const timeoutSec = Number.isFinite(data.timeoutSec) ? Math.max(5, data.timeoutSec) : 30;
+    startScreenshotProgress(data.requestId, timeoutSec);
+    pushScreenshotProgressLog(t('screenshot.requestSent', { requestId: data.requestId }));
     screenshotHint.value = t('screenshot.requestSent', { requestId: data.requestId });
   } catch (error) {
+    closeScreenshotProgressModal();
     screenshotHint.value = t('screenshot.requestFailed', { msg: toMessage(error) });
-  } finally {
     screenshotLoading.value = false;
   }
 }
@@ -588,6 +665,9 @@ function bindSocket() {
         return;
       }
 
+      screenshotProgress.value = 100;
+      pushScreenshotProgressLog(t('screenshot.ready', { requestId: payload.requestId }));
+      closeScreenshotProgressModal();
       screenshotImageDataUrl.value = payload.imageDataUrl;
       screenshotMeta.value = {
         requestId: payload.requestId,
@@ -604,6 +684,13 @@ function bindSocket() {
       return;
     }
 
+    screenshotProgress.value = 100;
+    pushScreenshotProgressLog(
+      t('screenshot.failed', {
+        reason: mapScreenshotReason(payload.reason),
+      }),
+    );
+    closeScreenshotProgressModal();
     screenshotHint.value = t('screenshot.failed', {
       reason: mapScreenshotReason(payload.reason),
     });
@@ -758,6 +845,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   window.removeEventListener('resize', renderHistoryChart);
+  stopScreenshotProgressTracking();
   socket?.disconnect();
   chart?.dispose();
   chart = null;

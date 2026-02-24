@@ -14,7 +14,7 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "1.0.0"
-        buildConfigField("String", "SERVER_BASE_URL", "\"http://192.168.2.247:3030/api/v1\"")
+        buildConfigField("String", "SERVER_BASE_URL", "\"https://doing.seimo.cn/api/v1\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

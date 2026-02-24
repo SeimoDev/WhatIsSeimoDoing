@@ -94,7 +94,7 @@ fun MainScreen(
                 fontWeight = FontWeight.Bold,
             )
             Text(
-                text = "Server: http://192.168.2.247:3030",
+                text = "Server: https://doing.seimo.cn",
                 style = MaterialTheme.typography.bodyMedium,
             )
             if (snapshot.rootAvailable) {

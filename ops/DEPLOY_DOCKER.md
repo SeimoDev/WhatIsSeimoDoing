@@ -29,7 +29,7 @@ cp .env.docker.example .env.docker
 - `web.allowedOrigin`：Web 访问来源
 - `security.*`：JWT 密钥、刷新密钥、截图密码、注册码
 - `realtime.namespace`：Socket 命名空间（默认 `/api/v1/ws`）
-- `realtime.publicWsUrl`：返回给 Android 设备的公网 WS 地址
+- `realtime.publicWsUrl`：返回给 Android 设备的公网 WS 地址（Cloudflare 场景建议 `wss://...`）
 
 ## 3. 配置 Docker 环境变量
 
@@ -41,6 +41,7 @@ cp .env.docker.example .env.docker
 - `WEB_VITE_WS_BASE_URL`
 - `BACKEND_SERVER_HOST`
 - `BACKEND_SERVER_PORT`
+- `SCREENSHOT_TIMEOUT_SEC`
 - `WS_NAMESPACE`
 - `PUBLIC_WS_URL`
 - `TZ`
@@ -66,6 +67,10 @@ curl "http://127.0.0.1/socket.io/?EIO=4&transport=polling"
 - `/api/v1/*` 返回后端响应
 - `/socket.io/*` 返回 Socket.IO 握手数据
 
+建议额外验证：
+
+- `POST /api/v1/devices/register` 返回的 `wsUrl` 是否为 `wss://doing.seimo.cn/api/v1/ws`
+
 ## 6. Cloudflare 配置建议
 
 1. 将 `doing.seimo.cn` 的 DNS 记录设为 `Proxied`（橙云）。
@@ -73,6 +78,7 @@ curl "http://127.0.0.1/socket.io/?EIO=4&transport=polling"
    源站仅 HTTP：`Flexible`
    源站有有效 HTTPS：`Full (strict)`
 3. 确认 Cloudflare 已启用 WebSocket 代理。
+4. `PUBLIC_WS_URL` 建议使用 `wss://doing.seimo.cn/api/v1/ws`，避免 `ws://` 被重定向或拦截。
 
 ## 7. Android APP 接口 URL 代码位置
 
@@ -95,6 +101,8 @@ curl "http://127.0.0.1/socket.io/?EIO=4&transport=polling"
 
 - 设备端 WebSocket 地址来自后端注册接口返回的 `wsUrl`，
   由 `PUBLIC_WS_URL` 或 `realtime.publicWsUrl` 控制。
+- Android 端会缓存 `wsUrl`（SharedPreferences 的 `ws_url`）。
+  修改服务端地址后，请清理 APP 数据或卸载重装，让设备重新注册获取新 `wsUrl`。
 
 ## 8. 停止服务
 
