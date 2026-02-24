@@ -87,6 +87,16 @@ cd android
 
 说明：在当前 CI/容器资源下，`assembleDebug` 在 dex merge 阶段可能 OOM；`compileDebugKotlin` 已通过，建议在 Android Studio 本机环境打包。
 
+## 图标缺失一次性修复流程
+
+适用场景：发布包含 ROOT 包解析修复后的 Android 客户端后，需要把历史 `icon_hash` 但无 `icon_base64` 的记录回填完整。
+
+1. 安装新客户端并启动 KeepAlive。
+2. 在客户端主页面点击 `Sync Apps`（该入口会触发 `forceUploadIcons=true` 的手动同步）。
+3. 等待弹窗日志出现 `Sync completed`。
+4. 在后端查看 `APP_SYNC` 日志，确认未出现大规模 `icon resolve failed`。
+5. 用 `ops/icon-sync-metrics.sql` 验收回填效果（覆盖率和空图标指标）。
+
 ## Docker 联调
 
 ```bash

@@ -37,10 +37,90 @@ import java.io.ByteArrayOutputStream
 import java.util.Locale
 import java.util.UUID
 
-private data class RootPackageEntry(
+internal data class RootPackageEntry(
     val packageName: String,
     val apkPath: String?,
 )
+
+internal data class InstalledAppInfo(
+    val packageName: String,
+    val appName: String,
+    val isSystemApp: Boolean,
+    val apkPath: String?,
+)
+
+internal fun parseRootPackageEntriesFromPmList(stdout: String): List<RootPackageEntry> {
+    return stdout
+        .lineSequence()
+        .map { line -> line.trim() }
+        .filter { line -> line.isNotBlank() && line.startsWith("package:") }
+        .mapNotNull { line ->
+            val payload = line.removePrefix("package:")
+            if (payload.isBlank()) {
+                return@mapNotNull null
+            }
+
+            val splitIndex = payload.lastIndexOf('=')
+            if (splitIndex < 0) {
+                val packageName = payload.trim()
+                if (packageName.isBlank()) {
+                    null
+                } else {
+                    RootPackageEntry(
+                        packageName = packageName,
+                        apkPath = null,
+                    )
+                }
+            } else {
+                val path = payload.substring(0, splitIndex).ifBlank { null }
+                val packageName = payload.substring(splitIndex + 1).trim()
+                if (packageName.isBlank()) {
+                    null
+                } else {
+                    RootPackageEntry(
+                        packageName = packageName,
+                        apkPath = path,
+                    )
+                }
+            }
+        }
+        .toList()
+}
+
+internal fun mergeInstalledAppsForCatalogSync(
+    primary: List<InstalledAppInfo>,
+    supplement: List<InstalledAppInfo>,
+): List<InstalledAppInfo> {
+    val merged = linkedMapOf<String, InstalledAppInfo>()
+
+    primary.forEach { app ->
+        merged[app.packageName] = app
+    }
+    supplement.forEach { app ->
+        val existing = merged[app.packageName]
+        if (existing == null) {
+            merged[app.packageName] = app
+            return@forEach
+        }
+
+        val preferredName = if (
+            existing.appName == existing.packageName &&
+            app.appName.isNotBlank() &&
+            app.appName != app.packageName
+        ) {
+            app.appName
+        } else {
+            existing.appName
+        }
+        merged[app.packageName] = existing.copy(
+            appName = preferredName,
+            isSystemApp = existing.isSystemApp || app.isSystemApp,
+            apkPath = existing.apkPath ?: app.apkPath,
+        )
+    }
+
+    return merged.values.toList()
+}
 
 data class AppCatalogSyncProgress(
     val message: String,
@@ -59,13 +139,6 @@ class TelemetryManager(
     private val queueStore: EventQueueStore,
     private val backendClient: BackendClient,
 ) {
-    private data class InstalledAppInfo(
-        val packageName: String,
-        val appName: String,
-        val isSystemApp: Boolean,
-        val apkPath: String?,
-    )
-
     private val packageManager: PackageManager = context.packageManager
     private val registrationMutex = Mutex()
 
@@ -434,12 +507,21 @@ class TelemetryManager(
             return emptyList()
         }
 
-        return installedApps.map { app ->
+        var iconResolveFailureCount = 0
+        val iconResolveFailureSamples = mutableListOf<String>()
+
+        val appCatalogItems = installedApps.map { app ->
             val iconBytes = resolveAppIcon(
                 packageName = app.packageName,
                 apkPath = app.apkPath,
                 maxIconSizePx = APP_SYNC_ICON_SIZE_PX,
             )
+            if (forceUploadIcons && iconBytes == null) {
+                iconResolveFailureCount += 1
+                if (iconResolveFailureSamples.size < APP_SYNC_ICON_FAILURE_SAMPLE_LIMIT) {
+                    iconResolveFailureSamples += app.packageName
+                }
+            }
             val iconHash = iconBytes?.let(::md5Hex)
             val shouldUploadIcon = when {
                 iconHash.isNullOrBlank() -> false
@@ -463,15 +545,30 @@ class TelemetryManager(
                 iconBase64 = iconBase64,
             )
         }
+
+        if (forceUploadIcons) {
+            if (iconResolveFailureCount > 0) {
+                Log.w(
+                    TAG,
+                    "APP_SYNC icon resolve failed count=$iconResolveFailureCount samplePackages=${iconResolveFailureSamples.joinToString(",")}",
+                )
+            } else {
+                Log.i(TAG, "APP_SYNC icon resolve failed count=0 totalApps=${installedApps.size}")
+            }
+        }
+
+        return appCatalogItems
     }
 
     private fun queryInstalledApps(
         onProgress: ((AppCatalogSyncProgress) -> Unit)? = null,
     ): List<InstalledAppInfo> {
+        val packageManagerApps = queryInstalledAppsViaPackageManager()
+
         if (RootUtils.hasRoot()) {
             onProgress?.invoke(
                 AppCatalogSyncProgress(
-                    message = "Using ROOT package scan...",
+                    message = "Using ROOT package scan to supplement package manager...",
                     totalApps = 0,
                     syncedApps = 0,
                     totalBatches = 0,
@@ -480,19 +577,28 @@ class TelemetryManager(
             )
 
             val rootApps = queryInstalledAppsViaRoot()
-            if (rootApps.isNotEmpty()) {
-                return rootApps
+            if (rootApps.isEmpty()) {
+                onProgress?.invoke(
+                    AppCatalogSyncProgress(
+                        message = "ROOT scan unavailable, using package manager scan only",
+                        totalApps = 0,
+                        syncedApps = 0,
+                        totalBatches = 0,
+                        syncedBatches = 0,
+                    ),
+                )
+                return packageManagerApps
             }
 
-            onProgress?.invoke(
-                AppCatalogSyncProgress(
-                    message = "ROOT scan unavailable, fallback to permission-based scan",
-                    totalApps = 0,
-                    syncedApps = 0,
-                    totalBatches = 0,
-                    syncedBatches = 0,
-                ),
+            val mergedApps = mergeInstalledAppsForCatalogSync(
+                primary = packageManagerApps,
+                supplement = rootApps,
             )
+            Log.i(
+                TAG,
+                "APP_SYNC app source packageManager=${packageManagerApps.size} root=${rootApps.size} merged=${mergedApps.size}",
+            )
+            return mergedApps
         } else {
             onProgress?.invoke(
                 AppCatalogSyncProgress(
@@ -505,7 +611,7 @@ class TelemetryManager(
             )
         }
 
-        return queryInstalledAppsViaPackageManager()
+        return packageManagerApps
     }
 
     private fun queryInstalledAppsViaPackageManager(): List<InstalledAppInfo> {
@@ -555,7 +661,7 @@ class TelemetryManager(
             return emptyList()
         }
 
-        val rootEntries = parseRootPackageEntries(result.stdout)
+        val rootEntries = parseRootPackageEntriesFromPmList(result.stdout)
         if (rootEntries.isEmpty()) {
             return emptyList()
         }
@@ -598,40 +704,6 @@ class TelemetryManager(
                 compareBy<InstalledAppInfo> { it.isSystemApp }
                     .thenBy { it.appName.lowercase(Locale.ROOT) },
             )
-            .toList()
-    }
-
-    private fun parseRootPackageEntries(stdout: String): List<RootPackageEntry> {
-        return stdout
-            .lineSequence()
-            .map { line -> line.trim() }
-            .filter { line -> line.isNotBlank() && line.startsWith("package:") }
-            .mapNotNull { line ->
-                val payload = line.removePrefix("package:")
-                val eqIndex = payload.indexOf('=')
-                if (eqIndex >= 0) {
-                    val path = payload.substring(0, eqIndex).ifBlank { null }
-                    val packageName = payload.substring(eqIndex + 1).trim()
-                    if (packageName.isBlank()) {
-                        null
-                    } else {
-                        RootPackageEntry(
-                            packageName = packageName,
-                            apkPath = path,
-                        )
-                    }
-                } else {
-                    val packageName = payload.trim()
-                    if (packageName.isBlank()) {
-                        null
-                    } else {
-                        RootPackageEntry(
-                            packageName = packageName,
-                            apkPath = null,
-                        )
-                    }
-                }
-            }
             .toList()
     }
 
@@ -763,6 +835,7 @@ class TelemetryManager(
         private const val APP_SYNC_MAX_BATCH_ITEMS = 4
         private const val APP_SYNC_MAX_BATCH_ESTIMATED_BYTES = 48_000
         private const val APP_SYNC_BATCH_ITEM_OVERHEAD = 1024
+        private const val APP_SYNC_ICON_FAILURE_SAMPLE_LIMIT = 12
         private const val ROOT_PACKAGE_LIST_TIMEOUT_MS = 8_000L
         private val SYSTEM_APP_PATH_PREFIXES = listOf(
             "/system/",
