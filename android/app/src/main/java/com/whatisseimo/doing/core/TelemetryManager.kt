@@ -1,6 +1,7 @@
 package com.whatisseimo.doing.core
 
 import android.app.usage.UsageStatsManager
+import android.app.usage.UsageEvents
 import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
@@ -28,6 +29,7 @@ import com.whatisseimo.doing.model.ScreenStateRequest
 import com.whatisseimo.doing.network.BackendClient
 import com.whatisseimo.doing.network.BackendHttpException
 import com.whatisseimo.doing.util.RootUtils
+import com.whatisseimo.doing.util.chinaDate
 import com.whatisseimo.doing.util.md5Hex
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -122,6 +124,120 @@ internal fun mergeInstalledAppsForCatalogSync(
     return merged.values.toList()
 }
 
+internal data class UsageEventSample(
+    val packageName: String,
+    val timestampMs: Long,
+    val isForeground: Boolean,
+)
+
+internal fun aggregateUsageByPackageFromEvents(
+    events: List<UsageEventSample>,
+    windowStartMs: Long,
+    windowEndMs: Long,
+): Map<String, Long> {
+    if (windowEndMs <= windowStartMs) {
+        return emptyMap()
+    }
+
+    val sortedEvents = events
+        .asSequence()
+        .filter { event ->
+            event.packageName.isNotBlank() &&
+                event.timestampMs in 0 until windowEndMs
+        }
+        .sortedBy { event -> event.timestampMs }
+        .toList()
+
+    val usageByPackage = mutableMapOf<String, Long>()
+    var activePackage: String? = null
+    var activeStartedAtMs = windowStartMs
+
+    fun addUsage(packageName: String, startMs: Long, endMs: Long) {
+        val boundedStartMs = maxOf(startMs, windowStartMs)
+        val boundedEndMs = minOf(endMs, windowEndMs)
+        if (boundedEndMs <= boundedStartMs) {
+            return
+        }
+        val durationMs = boundedEndMs - boundedStartMs
+        usageByPackage[packageName] = (usageByPackage[packageName] ?: 0L) + durationMs
+    }
+
+    for (event in sortedEvents) {
+        if (event.isForeground) {
+            if (activePackage != null && activePackage != event.packageName) {
+                addUsage(
+                    packageName = checkNotNull(activePackage),
+                    startMs = activeStartedAtMs,
+                    endMs = event.timestampMs,
+                )
+            }
+            if (activePackage == null || activePackage != event.packageName) {
+                activePackage = event.packageName
+                activeStartedAtMs = event.timestampMs
+            }
+            continue
+        }
+
+        if (activePackage == event.packageName) {
+            addUsage(
+                packageName = event.packageName,
+                startMs = activeStartedAtMs,
+                endMs = event.timestampMs,
+            )
+            activePackage = null
+            activeStartedAtMs = event.timestampMs
+        }
+    }
+
+    val tailPackage = activePackage
+    if (!tailPackage.isNullOrBlank()) {
+        addUsage(
+            packageName = tailPackage,
+            startMs = activeStartedAtMs,
+            endMs = windowEndMs,
+        )
+    }
+
+    return usageByPackage
+        .asSequence()
+        .filter { (_, durationMs) -> durationMs > 0L }
+        .associate { (packageName, durationMs) -> packageName to durationMs }
+}
+
+internal fun trimUsageByElapsedBudget(
+    usageByPackage: Map<String, Long>,
+    elapsedMs: Long,
+): Map<String, Long> {
+    if (elapsedMs <= 0L || usageByPackage.isEmpty()) {
+        return emptyMap()
+    }
+
+    val sortedEntries = usageByPackage.entries
+        .asSequence()
+        .filter { (_, usageMs) -> usageMs > 0L }
+        .map { (packageName, usageMs) ->
+            packageName to usageMs.coerceAtLeast(0L)
+        }
+        .sortedByDescending { (_, usageMs) -> usageMs }
+        .toList()
+
+    var remainingMs = elapsedMs
+    val trimmed = linkedMapOf<String, Long>()
+
+    for ((packageName, usageMs) in sortedEntries) {
+        if (remainingMs <= 0L) {
+            break
+        }
+        val keptUsageMs = minOf(usageMs, remainingMs)
+        if (keptUsageMs > 0L) {
+            trimmed[packageName] = keptUsageMs
+            remainingMs -= keptUsageMs
+        }
+    }
+
+    return trimmed
+}
+
 data class AppCatalogSyncProgress(
     val message: String,
     val totalApps: Int,
@@ -144,6 +260,10 @@ class TelemetryManager(
 
     @Volatile
     private var latestUsageByPackage: Map<String, Long> = emptyMap()
+    @Volatile
+    private var latestUsageSnapshotDate: String = ""
+    @Volatile
+    private var latestUsageSnapshotTs: Long = 0L
 
     suspend fun ensureRegistered(forceRefresh: Boolean = false) = withContext(Dispatchers.IO) {
         registrationMutex.withLock {
@@ -189,7 +309,10 @@ class TelemetryManager(
                 nextIconHash to nextIconBase64
             }
 
-            val usage = latestUsageByPackage[packageName] ?: 0L
+            val usage = resolveTodayUsageAtSwitch(
+                packageName = packageName,
+                eventTs = ts,
+            )
             val body = ForegroundSwitchRequest(
                 ts = ts,
                 packageName = packageName,
@@ -215,10 +338,14 @@ class TelemetryManager(
         }
 
     suspend fun sendDailySnapshot() = withContext(Dispatchers.IO) {
-        val usage = collectUsageByPackage()
-        latestUsageByPackage = usage
+        val snapshotTs = System.currentTimeMillis()
+        val usage = collectUsageByPackage(snapshotTs)
+        updateUsageCache(
+            usageByPackage = usage,
+            snapshotTs = snapshotTs,
+        )
         val body = DailySnapshotRequest(
-            ts = System.currentTimeMillis(),
+            ts = snapshotTs,
             totalNotificationCount = counterStore.currentNotificationCount(),
             unlockCount = counterStore.currentUnlockCount(),
             apps = usage.entries
@@ -805,32 +932,128 @@ class TelemetryManager(
         }
     }
 
-    private fun collectUsageByPackage(): Map<String, Long> {
-        val manager = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
-        val now = System.currentTimeMillis()
+    private fun resolveTodayUsageAtSwitch(packageName: String, eventTs: Long): Long {
+        refreshUsageCacheIfStale(eventTs)
+        return latestUsageByPackage[packageName] ?: 0L
+    }
 
+    private fun refreshUsageCacheIfStale(referenceTs: Long) {
+        val currentChinaDate = chinaDate(referenceTs)
+        val cacheAgeMs = referenceTs - latestUsageSnapshotTs
+        val shouldRefresh = latestUsageByPackage.isEmpty() ||
+            latestUsageSnapshotDate != currentChinaDate ||
+            cacheAgeMs < 0L ||
+            cacheAgeMs > FOREGROUND_USAGE_CACHE_TTL_MS
+
+        if (!shouldRefresh) {
+            return
+        }
+
+        val usage = collectUsageByPackage(referenceTs)
+        updateUsageCache(
+            usageByPackage = usage,
+            snapshotTs = referenceTs,
+        )
+    }
+
+    private fun updateUsageCache(
+        usageByPackage: Map<String, Long>,
+        snapshotTs: Long,
+    ) {
+        latestUsageByPackage = usageByPackage
+        latestUsageSnapshotDate = chinaDate(snapshotTs)
+        latestUsageSnapshotTs = snapshotTs
+    }
+
+    private fun collectUsageByPackage(nowEpochMs: Long = System.currentTimeMillis()): Map<String, Long> {
+        val manager = context.getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
         val zoneId = java.time.ZoneId.of("Asia/Shanghai")
         val startOfDay = java.time.ZonedDateTime
-            .ofInstant(java.time.Instant.ofEpochMilli(now), zoneId)
+            .ofInstant(java.time.Instant.ofEpochMilli(nowEpochMs), zoneId)
             .toLocalDate()
             .atStartOfDay(zoneId)
             .toInstant()
             .toEpochMilli()
+        val elapsedMs = (nowEpochMs - startOfDay).coerceAtLeast(0L)
 
-        val stats = manager.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, startOfDay, now)
+        val usageByEvents = collectUsageByPackageFromEvents(
+            manager = manager,
+            startOfDay = startOfDay,
+            nowEpochMs = nowEpochMs,
+        )
+        if (usageByEvents.isNotEmpty()) {
+            return trimUsageByElapsedBudget(
+                usageByPackage = usageByEvents,
+                elapsedMs = elapsedMs,
+            )
+        }
+
+        val stats = manager.queryUsageStats(
+            UsageStatsManager.INTERVAL_BEST,
+            startOfDay,
+            nowEpochMs,
+        )
         if (stats.isNullOrEmpty()) {
             return emptyMap()
         }
 
-        return stats
-            .filter { usage -> usage.totalTimeInForeground > 0L }
-            .associate { usage ->
-                usage.packageName to usage.totalTimeInForeground
+        val usageByStats = mutableMapOf<String, Long>()
+        for (usage in stats) {
+            val packageName = usage.packageName.takeIf { it.isNotBlank() } ?: continue
+            val foregroundMs = usage.totalTimeInForeground.coerceAtLeast(0L)
+            if (foregroundMs <= 0L) {
+                continue
             }
+            usageByStats[packageName] = (usageByStats[packageName] ?: 0L) + foregroundMs
+        }
+
+        return trimUsageByElapsedBudget(
+            usageByPackage = usageByStats,
+            elapsedMs = elapsedMs,
+        )
+    }
+
+    private fun collectUsageByPackageFromEvents(
+        manager: UsageStatsManager,
+        startOfDay: Long,
+        nowEpochMs: Long,
+    ): Map<String, Long> {
+        val lookbackStart = (startOfDay - USAGE_EVENTS_LOOKBACK_MS).coerceAtLeast(0L)
+        val usageEvents = manager.queryEvents(lookbackStart, nowEpochMs)
+        val event = UsageEvents.Event()
+        val samples = mutableListOf<UsageEventSample>()
+
+        while (usageEvents.hasNextEvent()) {
+            usageEvents.getNextEvent(event)
+            val packageName = event.packageName?.takeIf { it.isNotBlank() } ?: continue
+            val isForeground = when (event.eventType) {
+                UsageEvents.Event.MOVE_TO_FOREGROUND,
+                UsageEvents.Event.ACTIVITY_RESUMED -> true
+
+                UsageEvents.Event.MOVE_TO_BACKGROUND,
+                UsageEvents.Event.ACTIVITY_PAUSED -> false
+
+                else -> null
+            } ?: continue
+
+            samples += UsageEventSample(
+                packageName = packageName,
+                timestampMs = event.timeStamp,
+                isForeground = isForeground,
+            )
+        }
+
+        return aggregateUsageByPackageFromEvents(
+            events = samples,
+            windowStartMs = startOfDay,
+            windowEndMs = nowEpochMs,
+        )
     }
 
     companion object {
         private const val TAG = "TelemetryManager"
+        private const val FOREGROUND_USAGE_CACHE_TTL_MS = 20_000L
+        private const val USAGE_EVENTS_LOOKBACK_MS = 24 * 60 * 60 * 1000L
         private const val APP_SYNC_ICON_SIZE_PX = 72
         private const val APP_SYNC_MAX_BATCH_ITEMS = 4
         private const val APP_SYNC_MAX_BATCH_ESTIMATED_BYTES = 48_000
