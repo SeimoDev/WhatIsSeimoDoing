@@ -31,7 +31,11 @@ export class ScreenshotController {
 
   @Post('request')
   request(@Body() dto: RequestScreenshotDto) {
-    return this.screenshotService.requestScreenshot(dto.deviceId, dto.password);
+    return this.screenshotService.requestScreenshot(
+      dto.deviceId,
+      dto.password,
+      dto.requesterSocketId,
+    );
   }
 
   @Post('result')

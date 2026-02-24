@@ -133,6 +133,7 @@ export class DatabaseService implements OnModuleDestroy {
       CREATE TABLE IF NOT EXISTS screenshot_requests (
         id TEXT PRIMARY KEY,
         device_id TEXT NOT NULL,
+        requester_socket_id TEXT,
         status TEXT NOT NULL,
         requested_at INTEGER NOT NULL,
         completed_at INTEGER,
@@ -143,6 +144,7 @@ export class DatabaseService implements OnModuleDestroy {
     `);
 
     this.ensureRealtimeStateColumns();
+    this.ensureScreenshotRequestColumns();
   }
 
   private ensureRealtimeStateColumns(): void {
@@ -160,6 +162,19 @@ export class DatabaseService implements OnModuleDestroy {
     if (!existing.has('screen_state_updated_at')) {
       this.db.exec(
         `ALTER TABLE device_realtime_state ADD COLUMN screen_state_updated_at INTEGER`,
+      );
+    }
+  }
+
+  private ensureScreenshotRequestColumns(): void {
+    const columns = this.all<{ name: string }>(
+      `PRAGMA table_info(screenshot_requests)`,
+    );
+    const existing = new Set(columns.map((column) => column.name));
+
+    if (!existing.has('requester_socket_id')) {
+      this.db.exec(
+        `ALTER TABLE screenshot_requests ADD COLUMN requester_socket_id TEXT`,
       );
     }
   }

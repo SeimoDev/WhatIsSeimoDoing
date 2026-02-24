@@ -128,7 +128,7 @@ docker compose --env-file .env.docker up --build
 - `POST /api/v1/events/foreground-switch` (device bearer)
 - `POST /api/v1/stats/daily-snapshot` (device bearer)
 - `POST /api/v1/screenshots/auth`
-- `POST /api/v1/screenshots/request` (body: `deviceId`, `password`)
+- `POST /api/v1/screenshots/request` (body: `deviceId`, `password`, `requesterSocketId`)
 - `POST /api/v1/screenshots/result` (device bearer, multipart)
 - `GET /api/v1/screenshots/result/:requestId` (header: `X-Screenshot-Password`)
 - `GET /api/v1/dashboard/devices`

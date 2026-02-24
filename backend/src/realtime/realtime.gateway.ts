@@ -119,6 +119,14 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     this.server.to(`device:${deviceId}`).emit(event, payload);
   }
 
+  emitToSocket(socketId: string, event: string, payload: unknown): void {
+    if (!this.server) {
+      this.logger.warn(`Socket server not ready, skip emitToSocket(${event})`);
+      return;
+    }
+    this.server.to(socketId).emit(event, payload);
+  }
+
   isDeviceConnected(deviceId: string): boolean {
     const rooms = this.server?.sockets?.adapter?.rooms;
     if (!rooms) {

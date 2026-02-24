@@ -502,6 +502,11 @@ async function requestScreenshot(deviceId: string) {
     showPasswordModal.value = true;
     return;
   }
+  const requesterSocketId = socket?.id ?? '';
+  if (!requesterSocketId) {
+    screenshotHint.value = t('screenshot.socketUnavailable');
+    return;
+  }
 
   screenshotLoading.value = true;
   screenshotHint.value = t('screenshot.waiting');
@@ -510,7 +515,7 @@ async function requestScreenshot(deviceId: string) {
   try {
     const { data } = await apiClient.post<{ requestId: string; timeoutSec: number }>(
       '/screenshots/request',
-      { deviceId, password },
+      { deviceId, password, requesterSocketId },
     );
 
     activeScreenshotRequestId.value = data.requestId;

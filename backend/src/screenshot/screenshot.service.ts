@@ -15,6 +15,7 @@ import { RealtimeGateway } from '../realtime/realtime.gateway';
 interface RequestRow {
   id: string;
   device_id: string;
+  requester_socket_id: string | null;
   status: string;
   error_message: string | null;
 }
@@ -57,7 +58,7 @@ export class ScreenshotService {
     };
   }
 
-  requestScreenshot(deviceId: string, password: string) {
+  requestScreenshot(deviceId: string, password: string, requesterSocketId: string) {
     this.assertValidScreenshotPassword(password);
 
     const device = this.db.get<{ id: string }>('SELECT id FROM devices WHERE id = @id', {
@@ -94,25 +95,20 @@ export class ScreenshotService {
           `lastHeartbeatAt=${lastHeartbeatAt} lastUpdatedAt=${lastUpdatedAt} ` +
           `threshold=${threshold} wsConnected=${wsConnected}`,
       );
-      this.realtimeGateway.emitToWeb('screenshot.error', {
-        deviceId,
-        reason: 'DEVICE_OFFLINE',
-        ts: now,
-      });
-
       throw new BadRequestException('Device offline');
     }
 
     const requestId = uuidv4();
     this.db.run(
       `INSERT INTO screenshot_requests (
-         id, device_id, status, requested_at
+         id, device_id, requester_socket_id, status, requested_at
        ) VALUES (
-         @id, @deviceId, @status, @requestedAt
+         @id, @deviceId, @requesterSocketId, @status, @requestedAt
        )`,
       {
         id: requestId,
         deviceId,
+        requesterSocketId,
         status: 'pending',
         requestedAt: Date.now(),
       },
@@ -122,7 +118,7 @@ export class ScreenshotService {
       requestId,
       ts: now,
     });
-    this.scheduleRequestTimeout(requestId, deviceId);
+    this.scheduleRequestTimeout(requestId, deviceId, requesterSocketId);
 
     return {
       requestId,
@@ -134,7 +130,7 @@ export class ScreenshotService {
 
   completeScreenshot(requestId: string, imageBuffer: Buffer, mimeType = 'image/png') {
     const request = this.db.get<RequestRow>(
-      `SELECT id, device_id, status, error_message
+      `SELECT id, device_id, requester_socket_id, status, error_message
        FROM screenshot_requests
        WHERE id = @id`,
       { id: requestId },
@@ -172,7 +168,7 @@ export class ScreenshotService {
       this.screenshotBufferStore.delete(requestId);
     }, 2 * 60 * 1000).unref();
 
-    this.realtimeGateway.emitToWeb('screenshot.ready', {
+    this.emitToRequester(request.requester_socket_id, 'screenshot.ready', {
       requestId,
       deviceId: request.device_id,
       late: isLateTimeoutResult,
@@ -196,11 +192,15 @@ export class ScreenshotService {
     return data;
   }
 
-  private scheduleRequestTimeout(requestId: string, deviceId: string): void {
+  private scheduleRequestTimeout(
+    requestId: string,
+    deviceId: string,
+    requesterSocketId: string,
+  ): void {
     const timeoutMs = this.realtime.screenshotTimeoutSec * 1000;
     setTimeout(() => {
       const request = this.db.get<RequestRow>(
-        `SELECT id, device_id, status
+        `SELECT id, device_id, requester_socket_id, status
          FROM screenshot_requests
          WHERE id = @id`,
         { id: requestId },
@@ -222,7 +222,7 @@ export class ScreenshotService {
         },
       );
 
-      this.realtimeGateway.emitToWeb('screenshot.error', {
+      this.emitToRequester(request.requester_socket_id ?? requesterSocketId, 'screenshot.error', {
         requestId,
         deviceId,
         reason: 'SCREENSHOT_TIMEOUT',
@@ -236,5 +236,12 @@ export class ScreenshotService {
     if (!valid) {
       throw new UnauthorizedException('Invalid screenshot password');
     }
+  }
+
+  private emitToRequester(socketId: string | null, event: string, payload: unknown): void {
+    if (!socketId) {
+      return;
+    }
+    this.realtimeGateway.emitToSocket(socketId, event, payload);
   }
 }

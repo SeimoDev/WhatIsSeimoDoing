@@ -28,6 +28,7 @@ const en = {
     requesting: 'Requesting...',
     waiting: 'Waiting device response...',
     fetching: 'Screenshot captured, fetching from server...',
+    socketUnavailable: 'Realtime channel not ready, please try again shortly',
     requestSent: 'Request sent ({requestId})',
     requestFailed: 'Request failed: {msg}',
     ready: 'Screenshot ready ({requestId})',
