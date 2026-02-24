@@ -337,8 +337,8 @@ describe('IngestService daily snapshot monotonic update', () => {
   it('caps realtime today_usage_ms to elapsed ms since China midnight', () => {
     const deviceId = 'device-2';
     const nowTs = Date.now();
-    const elapsedTodayMs = elapsedMsSinceChinaMidnight(nowTs);
-    const reportedUsageMs = elapsedTodayMs + 60 * 60 * 1000;
+    const minElapsedTodayMs = elapsedMsSinceChinaMidnight(nowTs);
+    const reportedUsageMs = minElapsedTodayMs + 60 * 60 * 1000;
 
     db.run(
       `INSERT INTO device_realtime_state (
@@ -374,6 +374,9 @@ describe('IngestService daily snapshot monotonic update', () => {
     );
 
     expect(row).toBeDefined();
-    expect(row?.today_usage_ms).toBe(elapsedTodayMs);
+    const maxElapsedTodayMs = elapsedMsSinceChinaMidnight(Date.now());
+    expect(row?.today_usage_ms).toBeLessThan(reportedUsageMs);
+    expect(row?.today_usage_ms).toBeGreaterThanOrEqual(minElapsedTodayMs);
+    expect(row?.today_usage_ms).toBeLessThanOrEqual(maxElapsedTodayMs);
   });
 });
