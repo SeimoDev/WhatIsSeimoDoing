@@ -8,6 +8,7 @@ import { DatabaseService } from '../database/database.service';
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
+const CHINA_TIMEZONE = 'Asia/Shanghai';
 
 interface DeviceListRow {
   id: string;
@@ -84,6 +85,7 @@ export class DashboardService {
 
     const now = Date.now();
     const threshold = now - this.realtime.heartbeatTimeoutSec * 1000;
+    const elapsedMsSinceChinaMidnight = this.elapsedMsSinceChinaMidnight(now);
 
     return {
       devices: rows.map((row) => {
@@ -109,7 +111,10 @@ export class DashboardService {
                 iconHash: row.icon_hash,
                 iconBase64: row.icon_base64,
                 foregroundStartedAt: row.foreground_started_at,
-                todayUsageMs: row.today_usage_ms,
+                todayUsageMs: this.clampTodayUsageMs(
+                  row.today_usage_ms,
+                  elapsedMsSinceChinaMidnight,
+                ),
               }
             : null,
         };
@@ -121,7 +126,8 @@ export class DashboardService {
   getToday(deviceId: string) {
     this.ensureDeviceExists(deviceId);
 
-    const today = dayjs().tz('Asia/Shanghai').format('YYYY-MM-DD');
+    const now = Date.now();
+    const today = this.toChinaStatDate(now);
 
     const deviceStats = this.db.get<{
       total_notification_count: number;
@@ -184,10 +190,11 @@ export class DashboardService {
       { deviceId },
     );
 
-    const threshold = Date.now() - this.realtime.heartbeatTimeoutSec * 1000;
+    const threshold = now - this.realtime.heartbeatTimeoutSec * 1000;
     const online =
       state.is_online === 1 &&
       Number(state.last_heartbeat_at ?? 0) >= threshold;
+    const elapsedMsSinceChinaMidnight = this.elapsedMsSinceChinaMidnight(now);
 
     return {
       deviceId,
@@ -201,7 +208,10 @@ export class DashboardService {
             iconHash: state.icon_hash,
             iconBase64: state.icon_base64,
             foregroundStartedAt: state.foreground_started_at,
-            todayUsageMs: state.today_usage_ms,
+            todayUsageMs: this.clampTodayUsageMs(
+              state.today_usage_ms,
+              elapsedMsSinceChinaMidnight,
+            ),
           }
         : null,
       totalNotificationCount: deviceStats?.total_notification_count ?? 0,
@@ -209,20 +219,23 @@ export class DashboardService {
       snapshotTs: deviceStats?.snapshot_ts ?? null,
       apps: appRows.map((row) => ({
         packageName: row.package_name,
-        usageMs: row.usage_ms,
+        usageMs: this.clampTodayUsageMs(row.usage_ms, elapsedMsSinceChinaMidnight),
         appName: row.app_name ?? row.package_name,
         iconBase64: row.icon_base64,
       })),
-      serverTs: Date.now(),
+      serverTs: now,
     };
   }
 
   getHistory(deviceId: string, days: number) {
     this.ensureDeviceExists(deviceId);
 
+    const now = Date.now();
+    const today = this.toChinaStatDate(now);
+    const elapsedMsSinceChinaMidnight = this.elapsedMsSinceChinaMidnight(now);
     const boundedDays = Math.max(1, Math.min(30, days));
-    const fromDate = dayjs()
-      .tz('Asia/Shanghai')
+    const fromDate = dayjs(now)
+      .tz(CHINA_TIMEZONE)
       .subtract(boundedDays - 1, 'day')
       .format('YYYY-MM-DD');
 
@@ -291,6 +304,10 @@ export class DashboardService {
     }
 
     for (const app of appRows) {
+      const usageMs =
+        app.stat_date === today
+          ? this.clampTodayUsageMs(app.usage_ms, elapsedMsSinceChinaMidnight)
+          : this.normalizeUsageMs(app.usage_ms);
       const dayBucket = byDate.get(app.stat_date) ?? {
         statDate: app.stat_date,
         totalUsageMs: 0,
@@ -299,12 +316,12 @@ export class DashboardService {
         apps: [],
       };
 
-      dayBucket.totalUsageMs += app.usage_ms;
+      dayBucket.totalUsageMs += usageMs;
       dayBucket.apps.push({
         packageName: app.package_name,
         appName: app.app_name ?? app.package_name,
         iconBase64: app.icon_base64,
-        usageMs: app.usage_ms,
+        usageMs,
       });
       byDate.set(app.stat_date, dayBucket);
     }
@@ -315,7 +332,7 @@ export class DashboardService {
       points: Array.from(byDate.values()).sort((a, b) =>
         a.statDate.localeCompare(b.statDate),
       ),
-      serverTs: Date.now(),
+      serverTs: now,
     };
   }
 
@@ -327,5 +344,22 @@ export class DashboardService {
     if (!row) {
       throw new NotFoundException('Device not found');
     }
+  }
+
+  private toChinaStatDate(epochMs: number): string {
+    return dayjs(epochMs).tz(CHINA_TIMEZONE).format('YYYY-MM-DD');
+  }
+
+  private elapsedMsSinceChinaMidnight(nowEpochMs: number): number {
+    const nowInChina = dayjs(nowEpochMs).tz(CHINA_TIMEZONE);
+    return nowInChina.diff(nowInChina.startOf('day'), 'millisecond');
+  }
+
+  private clampTodayUsageMs(usageMs: number, maxMs: number): number {
+    return Math.min(this.normalizeUsageMs(usageMs), Math.max(0, maxMs));
+  }
+
+  private normalizeUsageMs(usageMs: number): number {
+    return Number.isFinite(usageMs) ? Math.max(0, Math.floor(usageMs)) : 0;
   }
 }

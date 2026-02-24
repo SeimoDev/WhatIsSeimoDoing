@@ -13,6 +13,7 @@ import { ScreenStateDto } from './dto/screen-state.dto';
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
+const CHINA_TIMEZONE = 'Asia/Shanghai';
 
 interface RealtimeStateRow {
   device_id: string;
@@ -112,6 +113,13 @@ export class IngestService {
 
   ingestForegroundSwitch(deviceId: string, dto: ForegroundSwitchDto) {
     const now = Date.now();
+    const eventStatDate = this.toChinaStatDate(dto.ts);
+    const todayStatDate = this.toChinaStatDate(now);
+    const shouldUpdateTodayUsage = eventStatDate === todayStatDate;
+    const normalizedTodayUsageMs = this.clampTodayUsageMs(
+      dto.todayUsageMsAtSwitch,
+      now,
+    );
     const catalog = this.db.get<AppCatalogRow>(
       `SELECT app_name, icon_hash, icon_base64
        FROM app_catalog
@@ -182,7 +190,10 @@ export class IngestService {
            app_name = excluded.app_name,
            icon_hash = excluded.icon_hash,
            foreground_started_at = excluded.foreground_started_at,
-           today_usage_ms = excluded.today_usage_ms,
+           today_usage_ms = CASE
+             WHEN @shouldUpdateTodayUsage = 1 THEN excluded.today_usage_ms
+             ELSE device_realtime_state.today_usage_ms
+           END,
            is_screen_locked = 0,
            screen_state_updated_at = excluded.screen_state_updated_at,
            updated_at = excluded.updated_at,
@@ -194,10 +205,11 @@ export class IngestService {
           appName: dto.appName,
           iconHash: nextIconHash,
           foregroundStartedAt: dto.ts,
-          todayUsageMs: dto.todayUsageMsAtSwitch,
+          todayUsageMs: normalizedTodayUsageMs,
           screenStateUpdatedAt: now,
           updatedAt: now,
           lastHeartbeatAt: now,
+          shouldUpdateTodayUsage: shouldUpdateTodayUsage ? 1 : 0,
         },
       );
     });
@@ -209,7 +221,7 @@ export class IngestService {
       appName: dto.appName,
       iconHash: nextIconHash,
       iconBase64: nextIconBase64,
-      todayUsageMsAtSwitch: dto.todayUsageMsAtSwitch,
+      todayUsageMsAtSwitch: shouldUpdateTodayUsage ? normalizedTodayUsageMs : 0,
       foregroundStartedAt: dto.ts,
     };
 
@@ -395,7 +407,9 @@ export class IngestService {
 
   ingestDailySnapshot(deviceId: string, dto: DailySnapshotDto) {
     const now = Date.now();
-    const statDate = dayjs(dto.ts).tz('Asia/Shanghai').format('YYYY-MM-DD');
+    const statDate = this.toChinaStatDate(dto.ts);
+    const todayStatDate = this.toChinaStatDate(now);
+    const shouldUpdateRealtimeTodayUsage = statDate === todayStatDate;
     let latestStats: DailyDeviceStatsRow | undefined;
 
     this.db.transaction(() => {
@@ -451,12 +465,16 @@ export class IngestService {
         { deviceId },
       );
 
-      if (currentState?.package_name) {
+      if (shouldUpdateRealtimeTodayUsage && currentState?.package_name) {
         const currentUsage = dto.apps.find(
           (app) => app.packageName === currentState.package_name,
         );
 
         if (currentUsage) {
+          const normalizedTodayUsageMs = this.clampTodayUsageMs(
+            currentUsage.usageMsToday,
+            now,
+          );
           this.db.run(
             `UPDATE device_realtime_state
              SET today_usage_ms = @todayUsageMs,
@@ -464,7 +482,7 @@ export class IngestService {
              WHERE device_id = @deviceId`,
             {
               deviceId,
-              todayUsageMs: currentUsage.usageMsToday,
+              todayUsageMs: normalizedTodayUsageMs,
               updatedAt: now,
             },
           );
@@ -489,7 +507,13 @@ export class IngestService {
       totalNotificationCount:
         latestStats?.total_notification_count ?? dto.totalNotificationCount,
       unlockCount: latestStats?.unlock_count ?? dto.unlockCount,
-      apps: dto.apps,
+      apps:
+        statDate === todayStatDate
+          ? dto.apps.map((app) => ({
+              ...app,
+              usageMsToday: this.clampTodayUsageMs(app.usageMsToday, now),
+            }))
+          : dto.apps,
     });
 
     return {
@@ -497,5 +521,24 @@ export class IngestService {
       statDate,
       receivedAt: now,
     };
+  }
+
+  private toChinaStatDate(epochMs: number): string {
+    return dayjs(epochMs).tz(CHINA_TIMEZONE).format('YYYY-MM-DD');
+  }
+
+  private elapsedMsSinceChinaMidnight(nowEpochMs: number): number {
+    const nowInChina = dayjs(nowEpochMs).tz(CHINA_TIMEZONE);
+    return nowInChina.diff(nowInChina.startOf('day'), 'millisecond');
+  }
+
+  private clampTodayUsageMs(usageMs: number, nowEpochMs: number): number {
+    const normalizedUsageMs = Number.isFinite(usageMs)
+      ? Math.max(0, Math.floor(usageMs))
+      : 0;
+    return Math.min(
+      normalizedUsageMs,
+      this.elapsedMsSinceChinaMidnight(nowEpochMs),
+    );
   }
 }

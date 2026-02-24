@@ -21,6 +21,8 @@ const { IngestService } = require('./ingest.service') as {
 };
 
 type IngestServiceInstance = InstanceType<typeof IngestService>;
+const CHINA_OFFSET_MS = 8 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 class InMemoryDatabase {
   private readonly db = new Database(':memory:');
@@ -116,6 +118,12 @@ function buildSnapshot(
       },
     ],
   };
+}
+
+function elapsedMsSinceChinaMidnight(epochMs: number): number {
+  const chinaTs = epochMs + CHINA_OFFSET_MS;
+  const modulo = ((chinaTs % DAY_MS) + DAY_MS) % DAY_MS;
+  return Math.floor(modulo);
 }
 
 describe('IngestService daily snapshot monotonic update', () => {
@@ -286,5 +294,86 @@ describe('IngestService daily snapshot monotonic update', () => {
     expect(row?.app_name).toBe('Foo Renamed');
     expect(row?.icon_hash).toBe('hash-1');
     expect(row?.icon_base64).toBe('base64-1');
+  });
+
+  it('does not overwrite realtime today_usage_ms with stale-day snapshots', () => {
+    const deviceId = 'device-1';
+    const previousRealtimeUsage = 123_456;
+    const staleTs = Date.now() - 36 * 60 * 60 * 1000;
+
+    db.run(
+      `INSERT INTO device_realtime_state (
+         device_id, package_name, today_usage_ms, is_screen_locked,
+         updated_at, last_heartbeat_at, is_online
+       ) VALUES (
+         @deviceId, @packageName, @todayUsageMs, 0,
+         @updatedAt, @lastHeartbeatAt, 1
+       )`,
+      {
+        deviceId,
+        packageName: 'com.example.app',
+        todayUsageMs: previousRealtimeUsage,
+        updatedAt: Date.now(),
+        lastHeartbeatAt: Date.now(),
+      },
+    );
+
+    service.ingestDailySnapshot(
+      deviceId,
+      buildSnapshot(staleTs, 5, 1),
+    );
+
+    const row = db.get<{ today_usage_ms: number }>(
+      `SELECT today_usage_ms
+       FROM device_realtime_state
+       WHERE device_id = @deviceId`,
+      { deviceId },
+    );
+
+    expect(row).toBeDefined();
+    expect(row?.today_usage_ms).toBe(previousRealtimeUsage);
+  });
+
+  it('caps realtime today_usage_ms to elapsed ms since China midnight', () => {
+    const deviceId = 'device-2';
+    const nowTs = Date.now();
+    const elapsedTodayMs = elapsedMsSinceChinaMidnight(nowTs);
+    const reportedUsageMs = elapsedTodayMs + 60 * 60 * 1000;
+
+    db.run(
+      `INSERT INTO device_realtime_state (
+         device_id, package_name, today_usage_ms, is_screen_locked,
+         updated_at, last_heartbeat_at, is_online
+       ) VALUES (
+         @deviceId, @packageName, 0, 0,
+         @updatedAt, @lastHeartbeatAt, 1
+       )`,
+      {
+        deviceId,
+        packageName: 'com.example.app',
+        updatedAt: nowTs,
+        lastHeartbeatAt: nowTs,
+      },
+    );
+
+    service.ingestDailySnapshot(deviceId, {
+      ...buildSnapshot(nowTs, 8, 2),
+      apps: [
+        {
+          packageName: 'com.example.app',
+          usageMsToday: reportedUsageMs,
+        },
+      ],
+    });
+
+    const row = db.get<{ today_usage_ms: number }>(
+      `SELECT today_usage_ms
+       FROM device_realtime_state
+       WHERE device_id = @deviceId`,
+      { deviceId },
+    );
+
+    expect(row).toBeDefined();
+    expect(row?.today_usage_ms).toBe(elapsedTodayMs);
   });
 });
