@@ -7,6 +7,7 @@ export interface DeviceSummary {
   appVersion: string;
   rootEnabled: boolean;
   online: boolean;
+  screenLocked: boolean;
   lastSeenAt: number | null;
   currentApp: CurrentApp | null;
 }
@@ -24,6 +25,7 @@ export interface TodayStats {
   deviceId: string;
   statDate: string;
   online: boolean;
+  screenLocked: boolean;
   currentApp: CurrentApp | null;
   totalNotificationCount: number;
   unlockCount: number;

@@ -125,6 +125,34 @@ body {
   gap: 18px;
 }
 
+.dashboard-toolbar {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.locale-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  background: #ffffffd9;
+  padding: 4px 10px;
+}
+
+.locale-switcher button {
+  border: 0;
+  background: transparent;
+  color: var(--text-dim);
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+.locale-switcher button.active {
+  color: var(--accent-teal);
+}
+
 .section-header {
   display: flex;
   align-items: center;
@@ -214,12 +242,6 @@ body {
   text-overflow: ellipsis;
 }
 
-.app-runtime {
-  margin-top: 8px;
-  font-weight: 600;
-  color: var(--accent-teal);
-}
-
 .metric-row {
   display: flex;
   align-items: center;
@@ -246,13 +268,6 @@ body {
   margin-top: 10px;
   color: var(--text-dim);
   font-size: 13px;
-}
-
-.screenshot-preview {
-  margin-top: 10px;
-  width: 100%;
-  border-radius: 10px;
-  border: 1px solid var(--line-soft);
 }
 
 .table-card table,
@@ -371,6 +386,62 @@ body {
   color: #fff;
 }
 
+.viewer-modal-card {
+  width: min(960px, 96vw);
+  max-height: 90vh;
+  overflow: auto;
+  background: #ffffff;
+  border-radius: 14px;
+  padding: 18px;
+  border: 1px solid #e2ece8;
+}
+
+.viewer-modal-card h3 {
+  margin: 0 0 10px;
+}
+
+.viewer-meta {
+  margin: 2px 0;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.viewer-image-wrap {
+  margin-top: 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  overflow: hidden;
+  background: #f6fbf9;
+}
+
+.viewer-image {
+  width: 100%;
+  max-height: 70vh;
+  object-fit: contain;
+  display: block;
+}
+
+.viewer-actions {
+  margin-top: 12px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.viewer-actions button {
+  border: 1px solid #b5c7c1;
+  background: #fff;
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+.viewer-actions .primary {
+  border-color: var(--accent-teal);
+  background: var(--accent-teal);
+  color: #fff;
+}
+
 .empty {
   color: var(--text-dim);
 }
@@ -393,5 +464,9 @@ body {
 
   .dashboard-main {
     padding: 16px;
+  }
+
+  .dashboard-toolbar {
+    justify-content: flex-start;
   }
 }

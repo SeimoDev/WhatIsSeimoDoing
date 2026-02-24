@@ -5,4 +5,6 @@
     <string name="foreground_service_channel_desc">Persistent keep-alive monitor service</string>
     <string name="foreground_service_notification_title">WhatIsSeimoDoing running</string>
     <string name="foreground_service_notification_text">Monitoring app switches and daily usage stats</string>
+    <string name="foreground_service_action_reconnect">Reconnect</string>
+    <string name="foreground_service_action_sync_apps">Sync Apps</string>
 </resources>

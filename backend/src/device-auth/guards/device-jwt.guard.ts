@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   CanActivate,
   ExecutionContext,
   Injectable,
@@ -26,6 +27,15 @@ export class DeviceJwtGuard implements CanActivate {
 
     if (payload.type !== 'device' || !payload.sub) {
       throw new UnauthorizedException('Invalid device token payload');
+    }
+
+    try {
+      this.deviceAuthService.ensureDeviceExists(payload.sub);
+    } catch (error) {
+      if (error instanceof BadRequestException) {
+        throw new UnauthorizedException('Device session expired, please register again');
+      }
+      throw error;
     }
 
     request.deviceId = payload.sub;

@@ -3,9 +3,20 @@
 import android.os.Build
 import android.util.Log
 import java.io.File
+import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
+
+data class SuCommandResult(
+    val exitCode: Int,
+    val stdout: String,
+    val stderr: String,
+    val timedOut: Boolean,
+)
 
 object RootUtils {
     private const val TAG = "RootUtils"
+    private const val DEFAULT_SU_OUTPUT_TIMEOUT_MS = 1_200L
+    private const val STREAM_JOIN_TIMEOUT_MS = 200L
 
     fun hasRoot(): Boolean {
         return runCatching {
@@ -45,6 +56,67 @@ object RootUtils {
         }.getOrElse {
             Log.e(TAG, "Failed to run su command on ${Build.MODEL}", it)
             -1
+        }
+    }
+
+    fun runSuCommandForOutput(
+        command: String,
+        timeoutMs: Long = DEFAULT_SU_OUTPUT_TIMEOUT_MS,
+    ): SuCommandResult {
+        return runCatching {
+            val process = Runtime.getRuntime().exec(arrayOf("su", "-c", command))
+            val stdoutBuffer = StringBuilder()
+            val stderrBuffer = StringBuilder()
+
+            val stdoutThread = thread(start = true, name = "wisd-su-stdout") {
+                runCatching {
+                    process.inputStream.bufferedReader().use { reader ->
+                        reader.forEachLine { line ->
+                            stdoutBuffer.append(line).append('\n')
+                        }
+                    }
+                }
+            }
+
+            val stderrThread = thread(start = true, name = "wisd-su-stderr") {
+                runCatching {
+                    process.errorStream.bufferedReader().use { reader ->
+                        reader.forEachLine { line ->
+                            stderrBuffer.append(line).append('\n')
+                        }
+                    }
+                }
+            }
+
+            val finished = process.waitFor(timeoutMs, TimeUnit.MILLISECONDS)
+            if (!finished) {
+                process.destroyForcibly()
+            }
+
+            stdoutThread.join(STREAM_JOIN_TIMEOUT_MS)
+            stderrThread.join(STREAM_JOIN_TIMEOUT_MS)
+
+            val exitCode = if (finished) {
+                runCatching { process.exitValue() }.getOrDefault(-1)
+            } else {
+                -1
+            }
+
+            process.destroy()
+            SuCommandResult(
+                exitCode = exitCode,
+                stdout = stdoutBuffer.toString().trim(),
+                stderr = stderrBuffer.toString().trim(),
+                timedOut = !finished,
+            )
+        }.getOrElse {
+            Log.e(TAG, "Failed to run su command with output on ${Build.MODEL}", it)
+            SuCommandResult(
+                exitCode = -1,
+                stdout = "",
+                stderr = it.message.orEmpty(),
+                timedOut = false,
+            )
         }
     }
 }

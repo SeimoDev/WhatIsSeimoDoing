@@ -1,17 +1,22 @@
 ﻿package com.whatisseimo.doing.data
 
 import android.content.Context
+import com.whatisseimo.doing.core.foreground.ForegroundSourceCoordinator
 import com.whatisseimo.doing.core.TelemetryManager
 import com.whatisseimo.doing.network.BackendClient
+import com.whatisseimo.doing.util.RootUtils
 
 class ServiceGraph(context: Context) {
     private val appContext = context.applicationContext
+
+    private val rootAvailable = RootUtils.hasRoot()
 
     val sessionStore = SessionStore(appContext)
     val counterStore = CounterStore(appContext)
     val iconCacheStore = IconCacheStore(appContext)
     val queueStore = EventQueueStore(appContext)
     val backendClient = BackendClient()
+    val foregroundSourceCoordinator = ForegroundSourceCoordinator(rootAvailable = rootAvailable)
     val telemetryManager = TelemetryManager(
         context = appContext,
         sessionStore = sessionStore,

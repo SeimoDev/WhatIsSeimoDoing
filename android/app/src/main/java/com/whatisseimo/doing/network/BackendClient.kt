@@ -1,12 +1,14 @@
-﻿package com.whatisseimo.doing.network
+package com.whatisseimo.doing.network
 
 import com.whatisseimo.doing.BuildConfig
+import com.whatisseimo.doing.model.AppCatalogSyncRequest
 import com.whatisseimo.doing.model.DailySnapshotRequest
 import com.whatisseimo.doing.model.ForegroundSwitchRequest
 import com.whatisseimo.doing.model.GenericOkResponse
 import com.whatisseimo.doing.model.HeartbeatRequest
 import com.whatisseimo.doing.model.RegisterDeviceRequest
 import com.whatisseimo.doing.model.RegisterDeviceResponse
+import com.whatisseimo.doing.model.ScreenStateRequest
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
@@ -15,6 +17,7 @@ import okhttp3.Request
 import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
 import java.io.File
 import java.util.concurrent.TimeUnit
 
@@ -41,11 +44,16 @@ class BackendClient {
             .build()
 
         return httpClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                error("registerDevice failed: ${response.code}")
+            ensureSuccess(response, "devices/register")
+            val raw = response.body.string()
+            if (raw.isBlank()) {
+                throw BackendHttpException(
+                    statusCode = response.code,
+                    requestPath = "devices/register",
+                    responseBody = null,
+                    detailMessage = "Empty register response",
+                )
             }
-
-            val raw = response.body?.string() ?: error("Empty register response")
             json.decodeFromString(RegisterDeviceResponse.serializer(), raw)
         }
     }
@@ -74,6 +82,22 @@ class BackendClient {
         )
     }
 
+    fun postScreenState(accessToken: String, body: ScreenStateRequest): GenericOkResponse {
+        return postJson(
+            path = "events/screen-state",
+            accessToken = accessToken,
+            payload = json.encodeToString(ScreenStateRequest.serializer(), body),
+        )
+    }
+
+    fun postAppCatalogSync(accessToken: String, body: AppCatalogSyncRequest): GenericOkResponse {
+        return postJson(
+            path = "events/app-catalog-sync",
+            accessToken = accessToken,
+            payload = json.encodeToString(AppCatalogSyncRequest.serializer(), body),
+        )
+    }
+
     fun uploadScreenshotResult(accessToken: String, requestId: String, imageFile: File): GenericOkResponse {
         val requestBody = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
@@ -92,9 +116,7 @@ class BackendClient {
             .build()
 
         return httpClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                error("uploadScreenshotResult failed: ${response.code}")
-            }
+            ensureSuccess(response, "screenshots/result")
             GenericOkResponse(true)
         }
     }
@@ -108,11 +130,30 @@ class BackendClient {
             .build()
 
         return httpClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                error("$path failed: ${response.code}")
-            }
-
+            ensureSuccess(response, path)
             GenericOkResponse(true)
         }
     }
+
+    private fun ensureSuccess(response: Response, path: String) {
+        if (response.isSuccessful) {
+            return
+        }
+        val body = response.body.string()
+        throw BackendHttpException(
+            statusCode = response.code,
+            requestPath = path,
+            responseBody = body.takeIf { it.isNotBlank() },
+        )
+    }
 }
+
+class BackendHttpException(
+    val statusCode: Int,
+    val requestPath: String,
+    val responseBody: String?,
+    detailMessage: String? = null,
+) : RuntimeException(
+    detailMessage
+        ?: "$requestPath failed: HTTP $statusCode" + if (responseBody.isNullOrBlank()) "" else " body=$responseBody",
+)

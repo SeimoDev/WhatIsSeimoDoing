@@ -24,6 +24,7 @@ interface DeviceListRow {
   icon_base64: string | null;
   foreground_started_at: number | null;
   today_usage_ms: number;
+  is_screen_locked: number | null;
   last_heartbeat_at: number | null;
   is_online: number;
 }
@@ -70,6 +71,7 @@ export class DashboardService {
          ac.icon_base64,
          rs.foreground_started_at,
          rs.today_usage_ms,
+         rs.is_screen_locked,
          rs.last_heartbeat_at,
          rs.is_online
        FROM devices d
@@ -98,6 +100,7 @@ export class DashboardService {
           appVersion: row.app_version,
           rootEnabled: row.root_enabled === 1,
           online,
+          screenLocked: row.is_screen_locked === 1,
           lastSeenAt: row.last_seen_at,
           currentApp: row.package_name
             ? {
@@ -161,6 +164,7 @@ export class DashboardService {
          ac.icon_base64,
          rs.foreground_started_at,
          rs.today_usage_ms,
+         rs.is_screen_locked,
          rs.last_heartbeat_at,
          rs.is_online,
          d.id,
@@ -189,6 +193,7 @@ export class DashboardService {
       deviceId,
       statDate: today,
       online,
+      screenLocked: state.is_screen_locked === 1,
       currentApp: state.package_name
         ? {
             packageName: state.package_name,

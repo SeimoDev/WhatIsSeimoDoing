@@ -23,6 +23,15 @@ class SessionStore(context: Context) {
         get() = prefs.getString("ws_url", null)
         set(value) = prefs.edit().putString("ws_url", value).apply()
 
+    fun clearSession() {
+        prefs.edit()
+            .remove("device_id")
+            .remove("access_token")
+            .remove("refresh_token")
+            .remove("ws_url")
+            .apply()
+    }
+
     fun clear() {
         prefs.edit().clear().apply()
     }

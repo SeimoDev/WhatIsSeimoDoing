@@ -57,6 +57,26 @@ data class DailySnapshotRequest(
 )
 
 @Serializable
+data class ScreenStateRequest(
+    val ts: Long,
+    val isScreenLocked: Boolean,
+)
+
+@Serializable
+data class AppCatalogItemRequest(
+    val packageName: String,
+    val appName: String,
+    val iconHash: String? = null,
+    val iconBase64: String? = null,
+)
+
+@Serializable
+data class AppCatalogSyncRequest(
+    val ts: Long,
+    val apps: List<AppCatalogItemRequest>,
+)
+
+@Serializable
 data class GenericOkResponse(
     val ok: Boolean = true,
 )

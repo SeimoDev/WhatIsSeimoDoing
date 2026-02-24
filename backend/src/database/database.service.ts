@@ -98,6 +98,8 @@ export class DatabaseService implements OnModuleDestroy {
         icon_hash TEXT,
         foreground_started_at INTEGER,
         today_usage_ms INTEGER NOT NULL DEFAULT 0,
+        is_screen_locked INTEGER NOT NULL DEFAULT 0,
+        screen_state_updated_at INTEGER,
         updated_at INTEGER NOT NULL,
         last_heartbeat_at INTEGER,
         is_online INTEGER NOT NULL DEFAULT 0,
@@ -139,5 +141,26 @@ export class DatabaseService implements OnModuleDestroy {
       );
       CREATE INDEX IF NOT EXISTS idx_screenshot_requests_device_requested ON screenshot_requests(device_id, requested_at DESC);
     `);
+
+    this.ensureRealtimeStateColumns();
+  }
+
+  private ensureRealtimeStateColumns(): void {
+    const columns = this.all<{ name: string }>(
+      `PRAGMA table_info(device_realtime_state)`,
+    );
+    const existing = new Set(columns.map((column) => column.name));
+
+    if (!existing.has('is_screen_locked')) {
+      this.db.exec(
+        `ALTER TABLE device_realtime_state ADD COLUMN is_screen_locked INTEGER NOT NULL DEFAULT 0`,
+      );
+    }
+
+    if (!existing.has('screen_state_updated_at')) {
+      this.db.exec(
+        `ALTER TABLE device_realtime_state ADD COLUMN screen_state_updated_at INTEGER`,
+      );
+    }
   }
 }
