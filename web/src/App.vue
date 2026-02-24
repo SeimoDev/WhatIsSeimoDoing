@@ -492,7 +492,7 @@ async function requestScreenshot(deviceId: string) {
 
     activeScreenshotRequestId.value = data.requestId;
     activeScreenshotDeviceId.value = deviceId;
-    const timeoutSec = Number.isFinite(data.timeoutSec) ? Math.max(5, data.timeoutSec) : 30;
+    const timeoutSec = Number.isFinite(data.timeoutSec) ? Math.max(5, data.timeoutSec) : 60;
     startScreenshotProgress(data.requestId, timeoutSec);
     pushScreenshotProgressLog(t('screenshot.requestSent', { requestId: data.requestId }));
     screenshotHint.value = t('screenshot.requestSent', { requestId: data.requestId });
