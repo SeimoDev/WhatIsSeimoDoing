@@ -9,6 +9,9 @@ import {
 } from '@nestjs/websockets';
 import { Injectable, Logger } from '@nestjs/common';
 import { Server, Socket } from 'socket.io';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { load } from 'js-yaml';
 import { DeviceAuthService } from '../device-auth/device-auth.service';
 
 interface DeviceSocketAuth {
@@ -16,9 +19,42 @@ interface DeviceSocketAuth {
   token?: string;
 }
 
+interface PartialConfigFile {
+  realtime?: {
+    namespace?: string;
+  };
+}
+
+const resolveWsNamespace = (): string => {
+  const envNamespace = process.env.WS_NAMESPACE;
+  if (envNamespace && envNamespace.startsWith('/')) {
+    return envNamespace;
+  }
+
+  const configPath = process.env.APP_CONFIG_PATH ?? path.resolve(process.cwd(), 'config.yaml');
+  if (!fs.existsSync(configPath)) {
+    return '/ws';
+  }
+
+  try {
+    const raw = fs.readFileSync(configPath, 'utf-8');
+    const parsed = load(raw) as PartialConfigFile | null;
+    const fromConfig = parsed?.realtime?.namespace;
+    if (fromConfig && fromConfig.startsWith('/')) {
+      return fromConfig;
+    }
+  } catch {
+    return '/ws';
+  }
+
+  return '/ws';
+};
+
+const wsNamespace = resolveWsNamespace();
+
 @Injectable()
 @WebSocketGateway({
-  namespace: '/ws',
+  namespace: wsNamespace,
   cors: {
     origin: true,
   },

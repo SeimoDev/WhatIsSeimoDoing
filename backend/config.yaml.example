@@ -1,0 +1,19 @@
+server:
+  host: 0.0.0.0
+  port: 3030
+web:
+  port: 5173
+  allowedOrigin: http://doing.seimo.cn
+security:
+  jwtSecret: change-this-super-secret-jwt-key-min-16
+  refreshSecret: change-this-super-secret-refresh-key-min-16
+  screenshotPassword: change_me_1234
+  screenshotTokenTtlMinutes: 10
+  registerCode: register_me
+storage:
+  sqlitePath: ./data/whatis.db
+  retentionDays: 90
+realtime:
+  heartbeatTimeoutSec: 30
+  namespace: /api/v1/ws
+  publicWsUrl: ws://doing.seimo.cn/api/v1/ws

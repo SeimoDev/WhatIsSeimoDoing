@@ -8,3 +8,5 @@ android/.gradle/
 android/build/
 android/app/build/
 *.hprof
+.env.docker
+backend/config.yaml

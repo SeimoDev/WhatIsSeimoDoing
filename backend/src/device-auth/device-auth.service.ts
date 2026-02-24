@@ -29,7 +29,7 @@ interface DeviceTokenPayload {
 @Injectable()
 export class DeviceAuthService {
   private readonly security: AppConfig['security'];
-  private readonly server: AppConfig['server'];
+  private readonly realtime: AppConfig['realtime'];
 
   constructor(
     private readonly db: DatabaseService,
@@ -37,7 +37,7 @@ export class DeviceAuthService {
     private readonly jwtService: JwtService,
   ) {
     this.security = this.configService.getOrThrow<AppConfig['security']>('security');
-    this.server = this.configService.getOrThrow<AppConfig['server']>('server');
+    this.realtime = this.configService.getOrThrow<AppConfig['realtime']>('realtime');
   }
 
   registerDevice(dto: RegisterDeviceDto) {
@@ -132,7 +132,7 @@ export class DeviceAuthService {
       deviceId,
       accessToken,
       refreshToken,
-      wsUrl: `ws://${this.server.host}:${this.server.port}/ws`,
+      wsUrl: this.realtime.publicWsUrl,
       heartbeatIntervalSec: 30,
     };
   }

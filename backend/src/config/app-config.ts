@@ -20,5 +20,7 @@ export interface AppConfig {
   };
   realtime: {
     heartbeatTimeoutSec: number;
+    namespace: string;
+    publicWsUrl: string;
   };
 }
