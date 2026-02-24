@@ -8,6 +8,8 @@ import android.app.Service
 import android.app.KeyguardManager
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.ConnectivityManager
 import android.net.Network
 import android.os.Build
@@ -32,6 +34,9 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.io.File
+import java.io.FileOutputStream
+import kotlin.math.max
 
 class KeepAliveService : Service() {
     private val serviceScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -530,13 +535,87 @@ class KeepAliveService : Service() {
         )
 
         if (tempFile != null && tempFile.exists()) {
+            val uploadFile = optimizeScreenshotForUpload(requestId, tempFile)
             runCatching {
-                telemetryManager.uploadScreenshot(requestId, tempFile)
+                telemetryManager.uploadScreenshot(requestId, uploadFile)
             }.onFailure {
                 Log.e(TAG, "Failed to upload screenshot requestId=$requestId", it)
             }
+            if (uploadFile.absolutePath != tempFile.absolutePath) {
+                uploadFile.delete()
+            }
             tempFile.delete()
         }
+    }
+
+    private fun optimizeScreenshotForUpload(requestId: String, sourceFile: File): File {
+        return runCatching {
+            val bounds = BitmapFactory.Options().apply {
+                inJustDecodeBounds = true
+            }
+            BitmapFactory.decodeFile(sourceFile.absolutePath, bounds)
+            val sourceWidth = bounds.outWidth
+            val sourceHeight = bounds.outHeight
+            if (sourceWidth <= 0 || sourceHeight <= 0) {
+                return sourceFile
+            }
+
+            val sampleSize = calculateSampleSize(
+                sourceWidth = sourceWidth,
+                sourceHeight = sourceHeight,
+                maxLongEdge = SCREENSHOT_UPLOAD_MAX_LONG_EDGE_PX,
+            )
+
+            val decodeOptions = BitmapFactory.Options().apply {
+                inSampleSize = sampleSize
+                inPreferredConfig = Bitmap.Config.RGB_565
+            }
+
+            val decoded = BitmapFactory.decodeFile(sourceFile.absolutePath, decodeOptions)
+                ?: return sourceFile
+
+            val compressedFile = File(cacheDir, "wisd_${requestId}.jpg")
+            val saved = FileOutputStream(compressedFile).use { output ->
+                decoded.compress(
+                    Bitmap.CompressFormat.JPEG,
+                    SCREENSHOT_UPLOAD_JPEG_QUALITY,
+                    output,
+                )
+            }
+            decoded.recycle()
+
+            if (!saved || !compressedFile.exists() || compressedFile.length() <= 0L) {
+                compressedFile.delete()
+                sourceFile
+            } else if (compressedFile.length() >= sourceFile.length()) {
+                compressedFile.delete()
+                sourceFile
+            } else {
+                compressedFile
+            }
+        }.getOrElse {
+            Log.w(TAG, "Screenshot optimize failed, fallback to source file", it)
+            sourceFile
+        }
+    }
+
+    private fun calculateSampleSize(
+        sourceWidth: Int,
+        sourceHeight: Int,
+        maxLongEdge: Int,
+    ): Int {
+        val longEdge = max(sourceWidth, sourceHeight)
+        if (longEdge <= maxLongEdge) {
+            return 1
+        }
+
+        var sampleSize = 1
+        var current = longEdge
+        while (current > maxLongEdge && sampleSize < 8) {
+            sampleSize *= 2
+            current /= 2
+        }
+        return sampleSize
     }
 
     private fun registerNetworkCallback() {
@@ -632,6 +711,8 @@ class KeepAliveService : Service() {
         private const val REQUEST_CODE_SYNC_APPS = 4202
 
         private const val SOCKET_WATCHDOG_INTERVAL_MS = 10_000L
+        private const val SCREENSHOT_UPLOAD_MAX_LONG_EDGE_PX = 1280
+        private const val SCREENSHOT_UPLOAD_JPEG_QUALITY = 68
 
         private const val ROOT_POLL_INTERVAL_MS = 500L
         private const val ROOT_STABLE_CONFIRM_MS = 1_500L

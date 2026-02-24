@@ -16,6 +16,7 @@ interface RequestRow {
   id: string;
   device_id: string;
   status: string;
+  error_message: string | null;
 }
 
 interface RealtimeState {
@@ -133,7 +134,7 @@ export class ScreenshotService {
 
   completeScreenshot(requestId: string, imageBuffer: Buffer, mimeType = 'image/png') {
     const request = this.db.get<RequestRow>(
-      `SELECT id, device_id, status
+      `SELECT id, device_id, status, error_message
        FROM screenshot_requests
        WHERE id = @id`,
       { id: requestId },
@@ -143,13 +144,16 @@ export class ScreenshotService {
       throw new NotFoundException('Screenshot request not found');
     }
 
-    if (request.status !== 'pending') {
+    const isLateTimeoutResult =
+      request.status === 'failed' && request.error_message === 'SCREENSHOT_TIMEOUT';
+
+    if (request.status !== 'pending' && !isLateTimeoutResult) {
       throw new BadRequestException('Screenshot request already completed');
     }
 
     this.db.run(
       `UPDATE screenshot_requests
-       SET status = @status, completed_at = @completedAt
+       SET status = @status, completed_at = @completedAt, error_message = NULL
        WHERE id = @id`,
       {
         id: requestId,
@@ -171,6 +175,7 @@ export class ScreenshotService {
     this.realtimeGateway.emitToWeb('screenshot.ready', {
       requestId,
       deviceId: request.device_id,
+      late: isLateTimeoutResult,
       ts: Date.now(),
     });
 

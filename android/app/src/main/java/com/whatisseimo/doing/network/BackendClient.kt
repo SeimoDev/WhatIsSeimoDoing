@@ -35,6 +35,13 @@ class BackendClient {
         .writeTimeout(10, TimeUnit.SECONDS)
         .build()
 
+    // Screenshot upload can be much slower on constrained tunnels.
+    private val screenshotUploadClient = httpClient.newBuilder()
+        .readTimeout(60, TimeUnit.SECONDS)
+        .writeTimeout(120, TimeUnit.SECONDS)
+        .callTimeout(140, TimeUnit.SECONDS)
+        .build()
+
     private val jsonType = "application/json".toMediaType()
 
     fun registerDevice(body: RegisterDeviceRequest): RegisterDeviceResponse {
@@ -99,13 +106,18 @@ class BackendClient {
     }
 
     fun uploadScreenshotResult(accessToken: String, requestId: String, imageFile: File): GenericOkResponse {
+        val imageMediaType = when (imageFile.extension.lowercase()) {
+            "jpg", "jpeg" -> "image/jpeg"
+            "webp" -> "image/webp"
+            else -> "image/png"
+        }
         val requestBody = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
             .addFormDataPart("requestId", requestId)
             .addFormDataPart(
                 "image",
                 imageFile.name,
-                imageFile.asRequestBody("image/png".toMediaType()),
+                imageFile.asRequestBody(imageMediaType.toMediaType()),
             )
             .build()
 
@@ -115,7 +127,7 @@ class BackendClient {
             .post(requestBody)
             .build()
 
-        return httpClient.newCall(request).execute().use { response ->
+        return screenshotUploadClient.newCall(request).execute().use { response ->
             ensureSuccess(response, "screenshots/result")
             GenericOkResponse(true)
         }
