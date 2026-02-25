@@ -40,6 +40,49 @@ import java.io.File
 import java.io.FileOutputStream
 import kotlin.math.max
 
+internal enum class SocketNotificationState {
+    CONNECTED,
+    RECONNECTING,
+    DISCONNECTED,
+}
+
+internal fun mapSocketEventToNotificationState(event: String): SocketNotificationState? {
+    return when (event) {
+        DeviceSocketClient.EVENT_CONNECT -> SocketNotificationState.CONNECTED
+        DeviceSocketClient.EVENT_RECONNECT_ATTEMPT,
+        DeviceSocketClient.EVENT_DISCONNECT,
+        DeviceSocketClient.EVENT_CONNECT_ERROR -> SocketNotificationState.RECONNECTING
+
+        DeviceSocketClient.EVENT_RECONNECT_FAILED -> SocketNotificationState.DISCONNECTED
+        else -> null
+    }
+}
+
+internal fun shouldTriggerImmediateReconnect(event: String): Boolean {
+    return event == DeviceSocketClient.EVENT_DISCONNECT ||
+        event == DeviceSocketClient.EVENT_CONNECT_ERROR ||
+        event == DeviceSocketClient.EVENT_RECONNECT_FAILED
+}
+
+internal fun hasSocketCredentials(wsUrl: String?, accessToken: String?): Boolean {
+    return !wsUrl.isNullOrBlank() && !accessToken.isNullOrBlank()
+}
+
+internal fun shouldRunImmediateReconnect(
+    lastAttemptAtMs: Long,
+    nowMs: Long,
+    minGapMs: Long,
+): Boolean {
+    if (lastAttemptAtMs <= 0L) {
+        return true
+    }
+    val elapsedMs = nowMs - lastAttemptAtMs
+    if (elapsedMs < 0L) {
+        return true
+    }
+    return elapsedMs >= minGapMs
+}
+
 class KeepAliveService : Service() {
     private val serviceScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val socketClient = DeviceSocketClient()
@@ -64,6 +107,11 @@ class KeepAliveService : Service() {
     private val appCatalogSyncMutex = Mutex()
     @Volatile
     private var activeReconnectSessionId: String? = null
+    private lateinit var notificationManager: NotificationManager
+    private var socketNotificationState: SocketNotificationState = SocketNotificationState.RECONNECTING
+    private var lastNotificationStateUpdateAt: Long = 0L
+    private val immediateReconnectMutex = Mutex()
+    private var lastImmediateReconnectAtMs: Long = 0L
 
     override fun onCreate() {
         super.onCreate()
@@ -76,10 +124,11 @@ class KeepAliveService : Service() {
         )
         powerManager = getSystemService(PowerManager::class.java)
         keyguardManager = getSystemService(KeyguardManager::class.java)
+        notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
         createNotificationChannel()
         registerNetworkCallback()
-        startForeground(NOTIFICATION_ID, buildNotification())
+        startForeground(NOTIFICATION_ID, buildNotification(socketNotificationState))
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -403,31 +452,66 @@ class KeepAliveService : Service() {
         imeCacheUpdatedAt = now
     }
 
-    private suspend fun ensureSocketConnected() {
-        telemetryManager.ensureRegistered()
+    private suspend fun ensureSocketConnected(): Boolean {
+        val registrationReady = runCatching {
+            telemetryManager.ensureRegistered()
+        }.onFailure { error ->
+            updateSocketStatusNotification(SocketNotificationState.DISCONNECTED)
+            Log.w(TAG, "Socket connect skipped because registration failed", error)
+        }.isSuccess
+        if (!registrationReady) {
+            return false
+        }
 
-        val wsUrl = telemetryManager.currentWsUrl() ?: return
-        val accessToken = telemetryManager.currentAccessToken() ?: return
+        val wsUrl = telemetryManager.currentWsUrl()
+        val accessToken = telemetryManager.currentAccessToken()
+        if (!hasSocketCredentials(wsUrl, accessToken)) {
+            updateSocketStatusNotification(SocketNotificationState.DISCONNECTED)
+            Log.w(TAG, "Socket connect skipped because ws credentials are unavailable")
+            return false
+        }
 
-        socketClient.connectIfNeeded(
-            wsUrl = wsUrl,
-            accessToken = accessToken,
-            onScreenshotRequest = { requestId ->
-                serviceScope.launch {
-                    handleScreenshotRequest(requestId)
-                }
-            },
-            onConnectionEvent = this::onSocketConnectionEvent,
-        )
+        updateSocketStatusNotification(SocketNotificationState.RECONNECTING)
+
+        return runCatching {
+            socketClient.connectIfNeeded(
+                wsUrl = checkNotNull(wsUrl),
+                accessToken = checkNotNull(accessToken),
+                onScreenshotRequest = { requestId ->
+                    serviceScope.launch {
+                        handleScreenshotRequest(requestId)
+                    }
+                },
+                onConnectionEvent = this::onSocketConnectionEvent,
+            )
+        }.onFailure { error ->
+            updateSocketStatusNotification(SocketNotificationState.DISCONNECTED)
+            Log.e(TAG, "Socket connect call failed", error)
+        }.isSuccess
     }
 
     private suspend fun forceReconnectSocket() {
-        telemetryManager.ensureRegistered()
-
         val reconnectSessionId = activeReconnectSessionId
+        val registrationReady = runCatching {
+            telemetryManager.ensureRegistered()
+        }.isSuccess
+        if (!registrationReady) {
+            updateSocketStatusNotification(SocketNotificationState.DISCONNECTED)
+            reconnectSessionId?.let { sessionId ->
+                emitReconnectEvent(
+                    sessionId = sessionId,
+                    message = "Reconnect failed: registration unavailable",
+                    isTerminal = true,
+                    isSuccess = false,
+                )
+            }
+            activeReconnectSessionId = null
+            return
+        }
 
         val wsUrl = telemetryManager.currentWsUrl()
         if (wsUrl.isNullOrBlank()) {
+            updateSocketStatusNotification(SocketNotificationState.DISCONNECTED)
             reconnectSessionId?.let { sessionId ->
                 emitReconnectEvent(
                     sessionId = sessionId,
@@ -442,6 +526,7 @@ class KeepAliveService : Service() {
 
         val accessToken = telemetryManager.currentAccessToken()
         if (accessToken.isNullOrBlank()) {
+            updateSocketStatusNotification(SocketNotificationState.DISCONNECTED)
             reconnectSessionId?.let { sessionId ->
                 emitReconnectEvent(
                     sessionId = sessionId,
@@ -454,28 +539,66 @@ class KeepAliveService : Service() {
             return
         }
 
-        socketClient.connectIfNeeded(
-            wsUrl = wsUrl,
-            accessToken = accessToken,
-            onScreenshotRequest = { requestId ->
-                serviceScope.launch {
-                    handleScreenshotRequest(requestId)
-                }
-            },
-            onConnectionEvent = this::onSocketConnectionEvent,
-        )
+        updateSocketStatusNotification(SocketNotificationState.RECONNECTING)
+
+        runCatching {
+            socketClient.connectIfNeeded(
+                wsUrl = wsUrl,
+                accessToken = accessToken,
+                onScreenshotRequest = { requestId ->
+                    serviceScope.launch {
+                        handleScreenshotRequest(requestId)
+                    }
+                },
+                onConnectionEvent = this::onSocketConnectionEvent,
+            )
+        }.onFailure { error ->
+            updateSocketStatusNotification(SocketNotificationState.DISCONNECTED)
+            reconnectSessionId?.let { sessionId ->
+                emitReconnectEvent(
+                    sessionId = sessionId,
+                    message = "Reconnect failed: ${error.message ?: "socket unavailable"}",
+                    isTerminal = true,
+                    isSuccess = false,
+                )
+            }
+            activeReconnectSessionId = null
+            return
+        }
+
         reconnectSessionId?.let { sessionId ->
             emitReconnectEvent(
                 sessionId = sessionId,
                 message = "Reconnect command sent",
             )
         }
-        socketClient.forceReconnect()
+        runCatching {
+            socketClient.forceReconnect()
+        }.onFailure { error ->
+            updateSocketStatusNotification(SocketNotificationState.DISCONNECTED)
+            reconnectSessionId?.let { sessionId ->
+                emitReconnectEvent(
+                    sessionId = sessionId,
+                    message = "Reconnect failed: ${error.message ?: "socket unavailable"}",
+                    isTerminal = true,
+                    isSuccess = false,
+                )
+            }
+            activeReconnectSessionId = null
+            return
+        }
     }
 
     private fun onSocketConnectionEvent(event: String, detail: String?) {
         val suffix = detail?.let { " detail=$it" }.orEmpty()
         Log.d(TAG, "Socket event=$event$suffix")
+
+        mapSocketEventToNotificationState(event)?.let { state ->
+            updateSocketStatusNotification(state)
+        }
+        if (shouldTriggerImmediateReconnect(event)) {
+            scheduleImmediateReconnect(event, detail)
+        }
 
         val sessionId = activeReconnectSessionId ?: return
         when (event) {
@@ -519,6 +642,54 @@ class KeepAliveService : Service() {
                     message = "Socket disconnected${detailSuffix(detail)}",
                 )
             }
+        }
+    }
+
+    private fun scheduleImmediateReconnect(event: String, detail: String?) {
+        serviceScope.launch {
+            val nowTs = System.currentTimeMillis()
+            val allowed = immediateReconnectMutex.withLock {
+                val shouldRun = shouldRunImmediateReconnect(
+                    lastAttemptAtMs = lastImmediateReconnectAtMs,
+                    nowMs = nowTs,
+                    minGapMs = MIN_IMMEDIATE_RECONNECT_GAP_MS,
+                )
+                if (shouldRun) {
+                    lastImmediateReconnectAtMs = nowTs
+                }
+                shouldRun
+            }
+
+            if (!allowed) {
+                Log.d(
+                    TAG,
+                    "Immediate reconnect suppressed event=$event dueToCooldown${detailSuffix(detail)}",
+                )
+                return@launch
+            }
+
+            updateSocketStatusNotification(SocketNotificationState.RECONNECTING)
+            val triggered = ensureSocketConnected()
+            if (triggered) {
+                Log.d(TAG, "Immediate reconnect triggered event=$event${detailSuffix(detail)}")
+            } else {
+                updateSocketStatusNotification(SocketNotificationState.DISCONNECTED)
+                Log.w(TAG, "Immediate reconnect unavailable event=$event${detailSuffix(detail)}")
+            }
+        }
+    }
+
+    private fun updateSocketStatusNotification(state: SocketNotificationState) {
+        val nowTs = System.currentTimeMillis()
+        if (socketNotificationState == state && nowTs - lastNotificationStateUpdateAt < 1000L) {
+            return
+        }
+        socketNotificationState = state
+        lastNotificationStateUpdateAt = nowTs
+        runCatching {
+            notificationManager.notify(NOTIFICATION_ID, buildNotification(state))
+        }.onFailure { error ->
+            Log.w(TAG, "Failed to update foreground notification state=$state", error)
         }
     }
 
@@ -665,7 +836,6 @@ class KeepAliveService : Service() {
     }
 
     private fun createNotificationChannel() {
-        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
@@ -675,15 +845,27 @@ class KeepAliveService : Service() {
                 description = getString(R.string.foreground_service_channel_desc)
                 setShowBadge(false)
             }
-            manager.createNotificationChannel(channel)
+            notificationManager.createNotificationChannel(channel)
         }
     }
 
-    private fun buildNotification(): Notification {
+    private fun buildNotification(
+        state: SocketNotificationState = socketNotificationState,
+    ): Notification {
+        val statusText = when (state) {
+            SocketNotificationState.CONNECTED ->
+                getString(R.string.foreground_service_notification_socket_connected)
+
+            SocketNotificationState.RECONNECTING ->
+                getString(R.string.foreground_service_notification_socket_reconnecting)
+
+            SocketNotificationState.DISCONNECTED ->
+                getString(R.string.foreground_service_notification_socket_disconnected)
+        }
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_monitor)
             .setContentTitle(getString(R.string.foreground_service_notification_title))
-            .setContentText(getString(R.string.foreground_service_notification_text))
+            .setContentText(statusText)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .addAction(
@@ -731,6 +913,7 @@ class KeepAliveService : Service() {
         private const val ROOT_POLL_INTERVAL_MS = 500L
         private const val ROOT_STABLE_CONFIRM_MS = 1_500L
         private const val ROOT_SCREEN_OFF_INTERVAL_MS = 3_000L
+        private const val MIN_IMMEDIATE_RECONNECT_GAP_MS = 3_000L
         private const val ROOT_IME_CACHE_TTL_MS = 5_000L
         private const val UNLOCK_POLL_INTERVAL_MS = 500L
         private const val UNLOCK_POLL_SCREEN_OFF_INTERVAL_MS = 1_500L
