@@ -15,6 +15,7 @@ import com.whatisseimo.doing.BuildConfig
 import com.whatisseimo.doing.data.CounterStore
 import com.whatisseimo.doing.data.EventQueueStore
 import com.whatisseimo.doing.data.IconCacheStore
+import com.whatisseimo.doing.data.QueueEnqueueResult
 import com.whatisseimo.doing.data.SessionStore
 import com.whatisseimo.doing.model.AppCatalogItemRequest
 import com.whatisseimo.doing.model.AppCatalogSyncRequest
@@ -257,6 +258,7 @@ class TelemetryManager(
 ) {
     private val packageManager: PackageManager = context.packageManager
     private val registrationMutex = Mutex()
+    private val flushQueueMutex = Mutex()
 
     @Volatile
     private var latestUsageByPackage: Map<String, Long> = emptyMap()
@@ -327,13 +329,15 @@ class TelemetryManager(
                     backendClient.postForegroundSwitch(token, body)
                 }
             }.onFailure {
-                queueStore.enqueue(
+                val queuedBody = body.copy(iconBase64 = null)
+                val enqueueResult = queueStore.enqueue(
                     QueuedEvent(
                         id = UUID.randomUUID().toString(),
                         createdAt = System.currentTimeMillis(),
-                        payload = QueuePayload.Foreground(body),
+                        payload = QueuePayload.Foreground(queuedBody),
                     ),
                 )
+                logQueueEnqueueResult(eventType = "foreground", result = enqueueResult)
             }
         }
 
@@ -363,42 +367,53 @@ class TelemetryManager(
                 backendClient.postDailySnapshot(token, body)
             }
         }.onFailure {
-            queueStore.enqueue(
+            val enqueueResult = queueStore.enqueue(
                 QueuedEvent(
                     id = UUID.randomUUID().toString(),
                     createdAt = System.currentTimeMillis(),
                     payload = QueuePayload.Snapshot(body),
                 ),
             )
+            logQueueEnqueueResult(eventType = "snapshot", result = enqueueResult)
         }
     }
 
     suspend fun flushQueue(maxBatch: Int = 20) = withContext(Dispatchers.IO) {
-        val batch = queueStore.popBatch(maxBatch)
-        if (batch.isEmpty()) {
-            return@withContext
-        }
+        flushQueueMutex.withLock {
+            val batch = queueStore.peekBatch(maxBatch)
+            if (batch.isEmpty()) {
+                return@withLock
+            }
 
-        for ((index, event) in batch.withIndex()) {
-            val result = runCatching {
-                when (val payload = event.payload) {
-                    is QueuePayload.Foreground -> {
-                        withAuthRetry { token ->
-                            backendClient.postForegroundSwitch(token, payload.body)
+            var ackedCount = 0
+            for (event in batch) {
+                val result = runCatching {
+                    when (val payload = event.payload) {
+                        is QueuePayload.Foreground -> {
+                            withAuthRetry { token ->
+                                backendClient.postForegroundSwitch(token, payload.body)
+                            }
                         }
-                    }
 
-                    is QueuePayload.Snapshot -> {
-                        withAuthRetry { token ->
-                            backendClient.postDailySnapshot(token, payload.body)
+                        is QueuePayload.Snapshot -> {
+                            withAuthRetry { token ->
+                                backendClient.postDailySnapshot(token, payload.body)
+                            }
                         }
                     }
                 }
+
+                if (result.isFailure) {
+                    if (ackedCount > 0) {
+                        queueStore.ackBatch(ackedCount)
+                    }
+                    return@withLock
+                }
+                ackedCount += 1
             }
 
-            if (result.isFailure) {
-                queueStore.prepend(batch.drop(index))
-                return@withContext
+            if (ackedCount > 0) {
+                queueStore.ackBatch(ackedCount)
             }
         }
     }
@@ -532,6 +547,25 @@ class TelemetryManager(
     fun currentWsUrl(): String? = sessionStore.wsUrl
 
     fun currentAccessToken(): String? = sessionStore.accessToken
+
+    private fun logQueueEnqueueResult(eventType: String, result: QueueEnqueueResult) {
+        if (!result.accepted) {
+            Log.w(
+                TAG,
+                "QUEUE enqueue dropped type=$eventType reason=${result.rejectReason} " +
+                    "dropped=${result.droppedCount} size=${result.queueSize} bytes=${result.queueBytes}",
+            )
+            return
+        }
+
+        if (result.droppedCount > 0) {
+            Log.w(
+                TAG,
+                "QUEUE enqueue trimmed type=$eventType dropped=${result.droppedCount} " +
+                    "size=${result.queueSize} bytes=${result.queueBytes}",
+            )
+        }
+    }
 
     private fun hasSession(): Boolean {
         return !sessionStore.deviceId.isNullOrBlank() &&

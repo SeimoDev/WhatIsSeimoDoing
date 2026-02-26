@@ -83,6 +83,28 @@ internal fun shouldRunImmediateReconnect(
     return elapsedMs >= minGapMs
 }
 
+internal fun nextExponentialBackoffMs(
+    currentBackoffMs: Long,
+    initialBackoffMs: Long,
+    maxBackoffMs: Long,
+): Long {
+    if (maxBackoffMs <= 0L) {
+        return 0L
+    }
+
+    val boundedInitial = initialBackoffMs
+        .coerceAtLeast(1L)
+        .coerceAtMost(maxBackoffMs)
+    if (currentBackoffMs <= 0L) {
+        return boundedInitial
+    }
+
+    val doubled = currentBackoffMs
+        .coerceAtLeast(boundedInitial)
+        .times(2L)
+    return doubled.coerceAtMost(maxBackoffMs)
+}
+
 class KeepAliveService : Service() {
     private val serviceScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val socketClient = DeviceSocketClient()
@@ -112,6 +134,7 @@ class KeepAliveService : Service() {
     private var lastNotificationStateUpdateAt: Long = 0L
     private val immediateReconnectMutex = Mutex()
     private var lastImmediateReconnectAtMs: Long = 0L
+    private var lastRootFailureLogAtMs: Long = 0L
 
     override fun onCreate() {
         super.onCreate()
@@ -255,12 +278,14 @@ class KeepAliveService : Service() {
         }
 
         Log.i(TAG, "FG_ROOT root probe worker started")
+        var failureBackoffMs = ROOT_INITIAL_FAILURE_BACKOFF_MS
         while (serviceScope.isActive) {
             try {
                 val now = System.currentTimeMillis()
-                if (!powerManager.isInteractive) {
+                if (!powerManager.isInteractive || keyguardManager.isKeyguardLocked) {
                     rootForegroundSwitchEngine.clearCandidate()
                     delay(ROOT_SCREEN_OFF_INTERVAL_MS)
+                    failureBackoffMs = ROOT_INITIAL_FAILURE_BACKOFF_MS
                     continue
                 }
 
@@ -295,20 +320,30 @@ class KeepAliveService : Service() {
                     }
                 } else {
                     foregroundCoordinator.markRootSampleFailure(now)
-                    val fallbackEnabled = foregroundCoordinator.allowAccessibilityFallback(now)
-                    Log.d(
-                        TAG,
-                        "FG_ROOT probe miss source=${sample.probeType} " +
-                            "exit=${sample.exitCode} timeout=${sample.timedOut} fallback=$fallbackEnabled",
-                    )
+                    if (shouldLogRootFailureNow(now)) {
+                        val fallbackEnabled = foregroundCoordinator.allowAccessibilityFallback(now)
+                        Log.d(
+                            TAG,
+                            "FG_ROOT probe miss source=${sample.probeType} " +
+                                "exit=${sample.exitCode} timeout=${sample.timedOut} fallback=$fallbackEnabled",
+                        )
+                    }
                 }
+                failureBackoffMs = ROOT_INITIAL_FAILURE_BACKOFF_MS
                 delay(ROOT_POLL_INTERVAL_MS)
             } catch (error: Throwable) {
                 if (error is CancellationException) {
                     throw error
                 }
-                Log.e(TAG, "FG_ROOT worker iteration failed", error)
-                delay(WORKER_FAILURE_BACKOFF_MS)
+                if (shouldLogRootFailureNow()) {
+                    Log.e(TAG, "FG_ROOT worker iteration failed", error)
+                }
+                delay(failureBackoffMs)
+                failureBackoffMs = nextExponentialBackoffMs(
+                    currentBackoffMs = failureBackoffMs,
+                    initialBackoffMs = ROOT_INITIAL_FAILURE_BACKOFF_MS,
+                    maxBackoffMs = ROOT_MAX_FAILURE_BACKOFF_MS,
+                )
             }
         }
     }
@@ -697,6 +732,14 @@ class KeepAliveService : Service() {
         return detail?.takeIf { it.isNotBlank() }?.let { " ($it)" }.orEmpty()
     }
 
+    private fun shouldLogRootFailureNow(nowMs: Long = System.currentTimeMillis()): Boolean {
+        if (nowMs - lastRootFailureLogAtMs < ROOT_FAILURE_LOG_THROTTLE_MS) {
+            return false
+        }
+        lastRootFailureLogAtMs = nowMs
+        return true
+    }
+
     private fun emitReconnectEvent(
         sessionId: String,
         message: String,
@@ -910,7 +953,10 @@ class KeepAliveService : Service() {
         private const val SCREENSHOT_UPLOAD_MAX_LONG_EDGE_PX = 1280
         private const val SCREENSHOT_UPLOAD_JPEG_QUALITY = 68
 
-        private const val ROOT_POLL_INTERVAL_MS = 500L
+        private const val ROOT_POLL_INTERVAL_MS = 1_500L
+        private const val ROOT_INITIAL_FAILURE_BACKOFF_MS = 1_500L
+        private const val ROOT_MAX_FAILURE_BACKOFF_MS = 6_000L
+        private const val ROOT_FAILURE_LOG_THROTTLE_MS = 30_000L
         private const val ROOT_STABLE_CONFIRM_MS = 1_500L
         private const val ROOT_SCREEN_OFF_INTERVAL_MS = 3_000L
         private const val MIN_IMMEDIATE_RECONNECT_GAP_MS = 3_000L

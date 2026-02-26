@@ -16,6 +16,8 @@ data class SuCommandResult(
 object RootUtils {
     private const val TAG = "RootUtils"
     private const val DEFAULT_SU_OUTPUT_TIMEOUT_MS = 1_200L
+    private const val GUARD_PID_FILE = "/data/local/tmp/wisd_guard.pid"
+    private const val GUARD_LOG_FILE = "/data/local/tmp/wisd_guard.log"
 
     fun hasRoot(): Boolean {
         return runCatching {
@@ -28,12 +30,10 @@ object RootUtils {
 
     fun startKeepAliveGuard(packageName: String) {
         val cmd = """
-            nohup sh -c '
-            while true; do
-              pidof $packageName >/dev/null 2>&1 || am start-foreground-service -n $packageName/.core.KeepAliveService
-              sleep 6
-            done
-            ' >/data/local/tmp/wisd_guard.log 2>&1 &
+            if [ -f $GUARD_PID_FILE ] && kill -0 `cat $GUARD_PID_FILE 2>/dev/null` 2>/dev/null; then
+              exit 0
+            fi
+            nohup sh -c 'echo ${'$'}${'$'} > $GUARD_PID_FILE; trap "rm -f $GUARD_PID_FILE" EXIT; while true; do pidof $packageName >/dev/null 2>&1 || am start-foreground-service -n $packageName/.core.KeepAliveService; sleep 6; done' >>$GUARD_LOG_FILE 2>&1 &
         """.trimIndent()
 
         runSuCommand(cmd)

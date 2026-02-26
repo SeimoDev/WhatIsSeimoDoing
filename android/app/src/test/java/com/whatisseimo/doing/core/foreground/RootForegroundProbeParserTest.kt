@@ -11,7 +11,7 @@ class RootForegroundProbeParserTest {
     fun `extracts package from AOSP mResumedActivity`() {
         val probe = RootForegroundProbe(commandRunner = { command, _ ->
             when (command) {
-                "dumpsys activity activities" -> SuCommandResult(
+                "/system/bin/dumpsys activity activities" -> SuCommandResult(
                     exitCode = 0,
                     stdout = "mResumedActivity: ActivityRecord{abc u0 com.example.app/.MainActivity t42}",
                     stderr = "",
@@ -32,14 +32,14 @@ class RootForegroundProbeParserTest {
     fun `falls back to window probe and parses MIUI current focus`() {
         val probe = RootForegroundProbe(commandRunner = { command, _ ->
             when (command) {
-                "dumpsys activity activities" -> SuCommandResult(
+                "/system/bin/dumpsys activity activities" -> SuCommandResult(
                     exitCode = 0,
                     stdout = "no resumed line",
                     stderr = "",
                     timedOut = false,
                 )
 
-                "dumpsys window windows" -> SuCommandResult(
+                "/system/bin/dumpsys window windows" -> SuCommandResult(
                     exitCode = 0,
                     stdout = "mCurrentFocus=Window{123 u0 com.miui.home/com.miui.home.launcher.Launcher}",
                     stderr = "",
@@ -60,7 +60,7 @@ class RootForegroundProbeParserTest {
         val probe = RootForegroundProbe(
             commandRunner = { command, _ ->
                 when (command) {
-                    "dumpsys activity activities" -> SuCommandResult(
+                    "/system/bin/dumpsys activity activities" -> SuCommandResult(
                         exitCode = 0,
                         stdout = "topResumedActivity: ActivityRecord{abc u0 com.android.systemui/.recents.RecentsActivity t88}",
                         stderr = "",
@@ -85,7 +85,7 @@ class RootForegroundProbeParserTest {
         var activityCalls = 0
         val probe = RootForegroundProbe(commandRunner = { command, _ ->
             when (command) {
-                "dumpsys activity activities" -> {
+                "/system/bin/dumpsys activity activities" -> {
                     activityCalls += 1
                     if (activityCalls == 1) {
                         SuCommandResult(
@@ -104,7 +104,7 @@ class RootForegroundProbeParserTest {
                     }
                 }
 
-                "dumpsys window windows" -> SuCommandResult(
+                "/system/bin/dumpsys window windows" -> SuCommandResult(
                     exitCode = 0,
                     stdout = "mFocusedApp=AppWindowToken{token u0 com.example.second/.HomeActivity}",
                     stderr = "",

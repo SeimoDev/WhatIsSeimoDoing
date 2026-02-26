@@ -125,19 +125,32 @@ class RootForegroundProbe(
             return null
         }
 
-        val lines = output.lineSequence().toList()
-        for (keyword in keywords) {
-            for (line in lines.asReversed()) {
-                if (!line.contains(keyword)) {
-                    continue
-                }
-                PACKAGE_COMPONENT_REGEX.find(line)?.groupValues?.get(1)?.let { packageName ->
-                    return packageName
+        if (keywords.isEmpty()) {
+            return PACKAGE_COMPONENT_REGEX.find(output)?.groupValues?.get(1)
+        }
+
+        var fallback: String? = null
+        val keywordMatchedPackage = arrayOfNulls<String>(keywords.size)
+
+        for (line in output.lineSequence()) {
+            val packageName = PACKAGE_COMPONENT_REGEX.find(line)?.groupValues?.get(1) ?: continue
+            fallback = packageName
+
+            keywords.forEachIndexed { index, keyword ->
+                if (line.contains(keyword)) {
+                    keywordMatchedPackage[index] = packageName
                 }
             }
         }
 
-        return PACKAGE_COMPONENT_REGEX.find(output)?.groupValues?.get(1)
+        for (index in keywords.indices) {
+            val byKeyword = keywordMatchedPackage[index]
+            if (!byKeyword.isNullOrBlank()) {
+                return byKeyword
+            }
+        }
+
+        return fallback
     }
 
     companion object {
